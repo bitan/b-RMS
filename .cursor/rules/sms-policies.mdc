@@ -1,0 +1,35 @@
+---
+description: SMS security, performance, and reliability enforcement
+globs: backend/**/*.py, frontend/src/**/*.{js,jsx}
+---
+
+# Supermarket Management System — enforced rules
+
+## Roles
+- `admin` = **super admin** (HQ, all branches)
+- `branch_admin` = **branch manager** (single branch, scoped data)
+- `cashier`, `inventory_manager` = branch staff
+- Use `policies.is_super_admin()`, `apply_branch_scope()`, `can_assign_role()` in backend
+
+## Security
+- Every `/api/*` route must call `get_current_user` or `require_role`; never rely on frontend-only checks.
+- Use `policies.validate_password()` for any new password-setting endpoint.
+- Apply `policies.apply_branch_scope()` to product/sale queries for non-admin users.
+- Escape user search input with `policies.escape_regex()` before MongoDB `$regex`.
+- Do not commit secrets; production requires `JWT_SECRET` (32+ chars) and `USE_MEMORY_DB=false`.
+- Auth cookies: `secure` + `samesite=none` only over HTTPS; `lax` for local HTTP.
+
+## Sales / inventory
+- Sales must validate stock before decrement; use conditional `$inc` and rollback on failure.
+- Support `idempotency_key` / `Idempotency-Key` on `POST /api/sales`.
+- Reject sales that would drive quantity below zero.
+
+## Performance
+- Paginate large list endpoints (`skip`, `limit`, max `MAX_PAGE_SIZE`).
+- Prefer WebSocket product patches over full catalog refetch.
+- One WebSocket connection per browser session (`WebSocketProvider`).
+
+## Reliability
+- Health: `/health/live`, `/health/ready` must stay accurate.
+- Production startup runs `policies.validate_environment()`.
+- Log security events (`login_failed`, admin actions) to audit logs.

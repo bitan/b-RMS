@@ -1,0 +1,81 @@
+{
+  "theme": "light",
+  "archetype": "4_swiss_and_high_contrast",
+  "domain": "Supermarket Management System Dashboard",
+  "typography": {
+    "heading_font": "Chivo",
+    "body_font": "IBM Plex Sans",
+    "scale": {
+      "h1": "text-3xl md:text-4xl tracking-tight font-black",
+      "h2": "text-2xl md:text-3xl tracking-tight font-bold",
+      "h3": "text-xl md:text-2xl tracking-tight font-semibold",
+      "h4": "text-lg md:text-xl font-semibold",
+      "body": "text-base leading-relaxed",
+      "small": "text-sm text-zinc-500",
+      "overline": "text-xs tracking-[0.2em] uppercase font-bold text-zinc-500"
+    }
+  },
+  "colors": {
+    "background": "#FAFAFA",
+    "surface": "#FFFFFF",
+    "text_primary": "#09090B",
+    "text_secondary": "#71717A",
+    "primary": "#000000",
+    "primary_foreground": "#FFFFFF",
+    "accent_blue": "#2563EB",
+    "alert_red": "#EF4444",
+    "warning_yellow": "#F59E0B",
+    "success_green": "#10B981",
+    "border": "#E4E4E7"
+  },
+  "layout_and_spacing": {
+    "philosophy": "Control Room Grid Protocol. High density, functional layout suitable for high-speed operational tasks like POS billing and inventory management.",
+    "grid_system": {
+      "dashboard": "grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6",
+      "pos_view": "grid-cols-1 lg:grid-cols-3 gap-0 lg:gap-6"
+    },
+    "spacing_scale": "Tailwind standard (p-2, p-4, p-6, p-8). Generous inner padding inside structured containers (p-6) to maintain legibility despite high data density.",
+    "surfaces": "Grid Borders and Flat Structural Look. Max border-radius 6px (rounded-md). 1px solid borders on all cards to maintain the 'Swiss / Technical' aesthetic. No soft shadows. Rely on crisp lines."
+  },
+  "components": {
+    "buttons": "Square or rounded-md. High contrast. Primary buttons are solid black. Secondary buttons are outline (border-zinc-200) with hover:bg-zinc-100.",
+    "cards": "Cardless or flat-card approach. bg-white, border border-zinc-200, rounded-md. No box-shadow. On hover, translate-y-[-2px] and shadow-sm for interactive cards.",
+    "tables": "Dense. py-3 px-4 cells. 1px bottom border on rows. Table headers must be uppercase, text-xs tracking-wider font-semibold.",
+    "inputs": "Flat, rounded-md, border-zinc-200. Focus state must use ring-2 ring-black/20 focus:border-black for high visibility.",
+    "navigation": "Left sidebar (sticky) for modules with dark or high-contrast active states. Top bar (sticky) for global search, user profile, and quick actions (e.g., 'New POS Session')."
+  },
+  "motion_and_interactions": {
+    "hover_states": "Crisp and immediate. Text color must explicitly change on hover for visibility.",
+    "transitions": "transition-all duration-200 ease-in-out for buttons, table rows, and links.",
+    "alerts": "Low stock alerts must pulse softly using Tailwind animate-pulse on the alert icon, not the whole card."
+  },
+  "icons_and_assets": {
+    "library": "lucide-react",
+    "strategy": "Functional, stroke-width 2. Consistent sizing (w-4 h-4 for inline, w-6 h-6 for navigation)."
+  },
+  "media": {
+    "image_urls": {
+      "login_background": {
+        "url": "https://static.prod-images.emergentagent.com/jobs/9446fa4c-5079-4e9a-aa30-3645f1422cd0/images/23f15430d2416e1e6fc0ba851ed70706b12c1c9992c0fa79faa0ea02cac06c58.png",
+        "description": "Abstract minimalist composition of supermarket retail elements. Use as a split-screen background for the Auth/Login page."
+      },
+      "cashier_avatar": {
+        "url": "https://static.prod-images.emergentagent.com/jobs/9446fa4c-5079-4e9a-aa30-3645f1422cd0/images/ec0f861db47a7b320f736ef7724b1ea156049dabbdf33a7aca2be4d8713b09e3.png",
+        "description": "Professional headshot of a friendly cashier. Use for the user profile dropdown, Employee Management tables, or sample user data."
+      }
+    },
+    "placeholders": "For product inventory items in the POS screen, use colored placeholder divs (e.g., bg-zinc-100) with a centered lucide-react icon (like Apple, Carrot, Milk, or Package) if image URLs are not available. Do not use external dummy image services."
+  },
+  "accessibility": {
+    "contrast": "Strict APCA/WCAG AA compliance. Use black (#000000) for primary text on light gray/white backgrounds.",
+    "testing_attributes": "Add data-testid to ALL interactive elements (buttons, links, form inputs) using kebab-case role-based names."
+  },
+  "instructions_to_main_agent": [
+    "Strictly adhere to the Light theme / Archetype 4 (Swiss & High-Contrast). Avoid gradients and soft UI shadows.",
+    "Install and use Chivo and IBM Plex Sans from Google Fonts.",
+    "In the POS UI, ensure the product grid is large and touch-friendly (min 8px spacing, large tap targets) and the billing summary is a sticky right-side pane (on desktop).",
+    "Use standard Tailwind CSS combined with heavily customized Shadcn UI primitives. Overwrite Shadcn rounded-xl or heavy shadow defaults to match the rounded-md / flat border instructions.",
+    "Build role-based conditional rendering (Admin vs Cashier vs Inventory Manager) into the sidebar and dashboard widgets.",
+    "Implement data-testid tags extensively across all forms, tables, and POS actions."
+  ]
+}

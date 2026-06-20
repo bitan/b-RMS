@@ -1,0 +1,48 @@
+{
+  "summary": "E2E tested all 6 new features (promo codes, shifts, audit log, expiring products, locked register, WebSocket stock sync). Backend: 18/18 new pytest tests pass in /app/backend/tests/test_new_features.py covering promo CRUD/validate (WELCOME10 10%, SAVE5 fixed, SUPER20 expired, invalid code 404, cashier 403), shift start/end/current/history lifecycle, audit logs with entity filter, expiring/soon endpoint, and /api/auth/register lockdown (admin/inventory_manager roles return 403 without admin auth; cashier self-signup allowed; invalid role 400). Frontend: Admin sidebar shows all 8 nav items (Dashboard, Point of Sale, Shift Report, Inventory, Suppliers, Employees, Reports, Audit Log). POS renders 24 product cards; added 3 products (subtotal $20.47), applied WELCOME10 -> 'Code WELCOME10: 10% off (-$2.05)' visible, Total = $18.42; cash checkout success. /shifts: start-shift-btn -> end-shift-btn flow works, history populated. /audit-log: entries visible (shift_started, sale_created, register, shift_ended). /inventory: Expiry column visible with dates, 6 products show upcoming expiry (Whole Wheat Bread 2026-05-28, Orange Juice 2026-06-12, Whole Milk 2026-05-20 highlighted '(7d)', Cheddar 2026-06-02, Greek Yogurt 2026-05-23, Butter 2026-05-27). All 36 prior tests still passing. Overall backend 100%, frontend 100%.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/promo-codes (seed)", "issue": "SUPER20 was seeded with expiry_date '2026-03-31' but container date is already 2026-05-13, so SUPER20 is always rejected as expired. Min-purchase rule is unreachable. Either bump expiry to 2026-12-31 or set to null."},
+      {"endpoint": "/api/products/expiring/soon", "issue": "Mongo query uses {'$ne': None, '$ne': ''} - duplicate dict key in Python: only the second $ne survives, so the None check is silently dropped. Use {'$nin': [None, '']} instead. Currently works because seed sets missing expiry to '' but fragile."},
+      {"endpoint": "server.py", "issue": "File now 1354 lines (up from 1014), still far over the 700-line guideline. Should be split into routers (auth.py, products.py, sales.py, promo.py, shifts.py, audit.py)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "WebSocket /ws/stock", "issue": "Initial WebSocket connection attempt fails ('WebSocket is closed before the connection is established') when the client connects before auth cookies are set. After login it reconnects fine but the noisy console warning appears on each fresh load.", "affected_selectors": ["wss://.../ws/stock"]}
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_new_features.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/test_role_access.py",
+    "/app/test_reports/pytest/new_features_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Update SUPER20 seed expiry_date to a future date (e.g., 2026-12-31) so the promo remains testable.",
+    "(Optional) Fix expiring/soon Mongo query duplicate $ne key: replace with {'$nin': [None, '']}.",
+    "(Optional) Split server.py (1354 lines) into modules; HIGH priority for maintainability now.",
+    "(Optional) Defer WebSocket connect until after authenticated state to avoid initial-load warning."
+  ],
+  "critical_code_review_comments": [
+    "server.py validate_promo_code orders checks expired -> min_purchase -> max_uses; consider returning a structured error code so the UI can differentiate.",
+    "/api/audit-logs sort uses 'created_at' string ISO field - works but a real datetime index would be more correct.",
+    "/api/shifts/start does not capture opening_cash from the request body (hardcoded 0); end-of-day reconciliation against closing_cash will always be off. Consider accepting opening_cash on start and closing_cash on end.",
+    "/api/promo-codes/validate uses await get_current_user(request) but does not gate by role; any logged-in user can probe valid promo codes (including cashiers/POS, which is the intended caller). No issue today but worth documenting.",
+    "Frontend Inventory shows raw dates (e.g., '2026-05-20 (7d)') in red - good UX. AuditLog rows are divs not <tr>; consistent but ensure has data-testid='audit-row-<id>' for stable e2e (currently missing).",
+    "POS apply-promo flow correctly converts WELCOME10 -> 10% off and persists '-$2.05' in cart; ensure backend /api/sales endpoint stores promo_code on the sale record (not verified in tests)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_new_features.py (new - 18 tests)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "Admin: admin@supermarket.com/admin123, Cashier: cashier@supermarket.com/cashier123, Store Keeper: storekeeper@supermarket.com/store123 - all verified.",
+  "seed_data_creation": "test_new_features.py creates TEST_self_cashier_<ts>@x.com cashier accounts (not deleted - low value, no admin-side user-delete endpoint).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Three pytest files cover everything: backend_test.py (24 tests, core CRUD), test_role_access.py (12 tests, RBAC), test_new_features.py (18 tests, new features). Total 54 backend tests, all passing. Frontend nav items = 8 for admin. POS data-testids: pos-product-<sku> (click to add), promo-code-input, apply-promo-btn, payment-cash/card, checkout-btn, close-success-dialog. Shift testids: start-shift-btn, end-shift-btn (the end triggers a confirmation modal with 'End Shift' button). Container date is 2026-05-13; this matters for promo expiry comparisons. WebSocket warning at /ws/stock on first load is harmless. Code quality: server.py 1354 lines - splitting strongly recommended.",
+  "rca of the issue": "N/A - all features working as specified. Two seed/code-quality observations (SUPER20 expired in seed; duplicate $ne dict key) are non-blocking but worth fixing."
+}

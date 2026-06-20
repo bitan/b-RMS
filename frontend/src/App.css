@@ -1,0 +1,120 @@
+/* ─── Sidebar ───────────────────────────────────────────────── */
+.sidebar {
+    width: 260px;
+    min-height: 100vh;
+    background: var(--bg-sidebar);
+    border-right: 1px solid var(--border-light);
+    box-shadow: 2px 0 20px rgba(124,58,237,0.04);
+    display: flex;
+    flex-direction: column;
+}
+
+/* ─── Main content ──────────────────────────────────────────── */
+.main-content {
+    flex: 1;
+    min-height: 100vh;
+    background: var(--bg-page);
+}
+
+/* ─── Top bar ───────────────────────────────────────────────── */
+.top-bar {
+    height: 64px;
+    background: var(--bg-header);
+    border-bottom: 1px solid var(--border-light);
+    box-shadow: 0 1px 8px rgba(124,58,237,0.04);
+}
+
+/* ─── POS Grid ──────────────────────────────────────────────── */
+.pos-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+    gap: 14px;
+}
+
+.pos-item {
+    aspect-ratio: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-card);
+    border: 1.5px solid var(--border-light);
+    border-radius: 16px;
+    cursor: pointer;
+    transition: all 0.2s ease-in-out;
+    box-shadow: var(--shadow-sm);
+}
+
+.pos-item:hover {
+    border-color: #F59E0B;
+    transform: translateY(-3px);
+    box-shadow: 0 8px 24px rgba(245,158,11,0.18);
+}
+
+/* ─── Receipt panel ─────────────────────────────────────────── */
+.receipt-panel {
+    background: var(--bg-card);
+    border-left: 1px solid var(--border-light);
+    min-width: 360px;
+    box-shadow: -2px 0 16px rgba(124,58,237,0.04);
+}
+
+/* ─── Auth page ─────────────────────────────────────────────── */
+.auth-container {
+    min-height: 100vh;
+    display: flex;
+    background: var(--bg-page);
+}
+
+.auth-left {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 48px;
+}
+
+.auth-right {
+    flex: 1;
+    background-size: cover;
+    background-position: center;
+    border-radius: 0 24px 24px 0;
+    overflow: hidden;
+}
+
+/* ─── Chart container ───────────────────────────────────────── */
+.chart-container {
+    background: var(--bg-card);
+    border-radius: 16px;
+    box-shadow: var(--shadow-card);
+    border: 1px solid var(--border-light);
+    padding: 24px;
+}
+
+/* ─── Responsive ────────────────────────────────────────────── */
+@media (max-width: 768px) {
+    .auth-right { display: none; }
+
+    .sidebar {
+        position: fixed;
+        left: -260px;
+        z-index: 50;
+        transition: left 0.3s ease;
+    }
+
+    .sidebar.open { left: 0; }
+
+    .receipt-panel {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        min-width: auto;
+        max-height: 60vh;
+        border-left: none;
+        border-top: 1px solid var(--border-light);
+        border-radius: 20px 20px 0 0;
+        overflow-y: auto;
+        z-index: 40;
+    }
+}
