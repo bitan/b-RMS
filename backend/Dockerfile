@@ -32,7 +32,6 @@ ENV PYTHONPATH=/app
 
 EXPOSE 8000
 
-ENV PYTHONPATH=/app
-
-# Explicitly run pg_server (PostgreSQL backend) — NOT backend.server (old MongoDB)
+# v2 — PostgreSQL backend only, MongoDB server removed
+# Explicitly run pg_server (PostgreSQL) — railway.toml startCommand also enforces this
 CMD ["sh", "-c", "uvicorn backend.pg_server:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]

@@ -1,5 +1,6 @@
 [build]
-builder = "NIXPACKS"
+builder = "DOCKERFILE"
+dockerfilePath = "backend/Dockerfile"
 
 [deploy]
 startCommand = "uvicorn backend.pg_server:app --host 0.0.0.0 --port $PORT --workers 1"
