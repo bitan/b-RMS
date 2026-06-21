@@ -49,6 +49,15 @@ async def get_db():
 async def create_tables():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Safe migrations — add columns that may not exist in older deployments
+        migrations = [
+            "ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS deduct_on_order BOOLEAN DEFAULT FALSE",
+        ]
+        for sql in migrations:
+            try:
+                await conn.execute(__import__('sqlalchemy').text(sql))
+            except Exception:
+                pass  # column already exists or table not yet created
 
 
 # ── Enums ───────────────────────────────────────────────────────────────────
