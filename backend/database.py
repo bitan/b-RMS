@@ -227,6 +227,9 @@ class MenuItem(Base):
     is_available : Mapped[bool] = mapped_column(Boolean, default=True)
     prep_time    : Mapped[int] = mapped_column(Integer, default=10)
     route_to     : Mapped[str] = mapped_column(String(20), default="kitchen")
+    # deduct_on_order: True = pick-and-serve (beer, drinks) → deduct stock immediately on order
+    #                  False = cooked/prepared items → deduct stock when marked ready
+    deduct_on_order: Mapped[bool] = mapped_column(Boolean, default=False)
     branch_id    : Mapped[str] = mapped_column(ForeignKey("branches.id"))
     created_at   : Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at   : Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

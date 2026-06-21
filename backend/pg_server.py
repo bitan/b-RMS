@@ -57,20 +57,21 @@ def create_refresh_token(user_id: str) -> str:
     payload = {"sub": user_id, "exp": datetime.now(timezone.utc) + timedelta(days=7), "type": "refresh"}
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
-# ── Tax constants (Ethiopia) ─────────────────────────────────────────────────
-SERVICE_CHARGE_RATE = 0.10
-VAT_RATE            = 0.15
-TOT_RATE            = 0.02
+# ── Tax constants (Ethiopia) — matches Eltrade A3 fiscal register ────────────
+VAT_RATE = 0.15  # 15% VAT only — no service charge, no TOT (matches Eltrade receipt)
 
 def calc_totals(subtotal: float, discount: float = 0) -> dict:
-    after = max(0.0, subtotal - discount)
-    sc    = round(after * SERVICE_CHARGE_RATE, 2)
-    base  = after + sc
-    vat   = round(base * VAT_RATE, 2)
-    tot   = round(base * TOT_RATE, 2)
-    return {"subtotal": round(after, 2), "service_charge": sc,
-            "vat_amount": vat, "tot_amount": tot,
-            "discount_amount": round(discount, 2), "total_amount": round(base + vat + tot, 2)}
+    after   = max(0.0, subtotal - discount)
+    vat     = round(after * VAT_RATE, 2)
+    total   = round(after + vat, 2)
+    return {
+        "subtotal":        round(after, 2),
+        "service_charge":  0.0,   # not used — kept for DB column compatibility
+        "vat_amount":      vat,
+        "tot_amount":      0.0,   # not used — kept for DB column compatibility
+        "discount_amount": round(discount, 2),
+        "total_amount":    total,
+    }
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 app = FastAPI(title="Bar & Restaurant Management System")
@@ -201,14 +202,14 @@ class MenuItemCreate(BaseModel):
     name: str; name_am: Optional[str] = None; category: str
     price: float; cost_price: float = 0; description: Optional[str] = None
     is_alcohol: bool = False; is_available: bool = True; prep_time: int = 10
-    route_to: str = "kitchen"; branch_id: Optional[str] = None
+    route_to: str = "kitchen"; deduct_on_order: bool = False; branch_id: Optional[str] = None
 
 class MenuItemUpdate(BaseModel):
     name: Optional[str] = None; name_am: Optional[str] = None
     category: Optional[str] = None; price: Optional[float] = None
     cost_price: Optional[float] = None; description: Optional[str] = None
     is_alcohol: Optional[bool] = None; is_available: Optional[bool] = None
-    prep_time: Optional[int] = None; route_to: Optional[str] = None
+    prep_time: Optional[int] = None; route_to: Optional[str] = None; deduct_on_order: Optional[bool] = None
 
 class IngredientCreate(BaseModel):
     name: str; unit: str; cost_per_unit: float = 0
@@ -608,7 +609,46 @@ async def get_menu_items(db: AsyncSession = Depends(get_db), user=Depends(get_cu
         q = q.where(or_(MenuItem.name.ilike(f"%{search}%"), MenuItem.name_am.ilike(f"%{search}%")))
     total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar()
     rows  = (await db.execute(q.offset(skip).limit(limit))).scalars().all()
-    return {"items": [_row(r) for r in rows], "total": total, "skip": skip, "limit": limit}
+
+    # Load all recipes and ingredients once for out-of-stock detection
+    menu_ids = [r.id for r in rows]
+    recipes = {}
+    if menu_ids:
+        recipe_rows = (await db.execute(select(Recipe).where(Recipe.menu_item_id.in_(menu_ids)))).scalars().all()
+        for recipe in recipe_rows:
+            recipes[recipe.menu_item_id] = recipe
+
+    # Load all ingredient stocks
+    all_ingredient_ids = set()
+    for recipe in recipes.values():
+        for ing_spec in (recipe.ingredients or []):
+            if ing_spec.get("ingredient_id"):
+                all_ingredient_ids.add(ing_spec["ingredient_id"])
+
+    ingredient_stocks = {}
+    if all_ingredient_ids:
+        ing_rows = (await db.execute(select(Ingredient).where(Ingredient.id.in_(all_ingredient_ids)))).scalars().all()
+        for ing in ing_rows:
+            ingredient_stocks[ing.id] = ing.current_stock
+
+    # Build result with out_of_stock flag
+    items_out = []
+    for r in rows:
+        d = _row(r)
+        recipe = recipes.get(r.id)
+        out_of_stock = False
+        if recipe:
+            for ing_spec in (recipe.ingredients or []):
+                ing_id  = ing_spec.get("ingredient_id")
+                qty_needed = float(ing_spec.get("quantity", 0))
+                stock = ingredient_stocks.get(ing_id, 0)
+                if ing_id and qty_needed > 0 and stock < qty_needed:
+                    out_of_stock = True
+                    break
+        d["out_of_stock"] = out_of_stock
+        items_out.append(d)
+
+    return {"items": items_out, "total": total, "skip": skip, "limit": limit}
 
 @app.post("/api/menu-items")
 async def create_menu_item(data: MenuItemCreate, db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
@@ -700,6 +740,14 @@ async def get_recipes(db: AsyncSession = Depends(get_db), user=Depends(get_curre
 @app.post("/api/recipes")
 async def create_recipe(data: RecipeCreate, db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
     if user["role"] not in policies.INVENTORY_ROLES: raise HTTPException(403, "Access denied")
+    # Upsert — if recipe exists for this menu item, update it
+    existing = (await db.execute(select(Recipe).where(Recipe.menu_item_id == data.menu_item_id))).scalar_one_or_none()
+    if existing:
+        existing.ingredients = data.ingredients
+        existing.instructions = data.instructions
+        existing.prep_time = data.prep_time
+        await db.commit()
+        return _row(existing)
     r = Recipe(id=str(uuid.uuid4()), **data.model_dump())
     db.add(r); await db.commit(); return _row(r)
 
@@ -1048,9 +1096,7 @@ async def update_item_status(oid: str, item_id: str, status: str, db: AsyncSessi
     if all_served: o.status = "served"
     elif all_ready: o.status = "ready"
     await db.commit()
-    # AUTO-DEDUCT ingredients when item is marked ready
-    if status == "ready" and ready_item:
-        asyncio.create_task(_auto_deduct_ingredients(db, ready_item, o.branch_id))
+    # Inventory deduction happens at payment time, not here
     await broadcast_entity_update("order", "item_ready", {
         "id": oid, "item_id": item_id, "status": status,
         "order_status": o.status,
@@ -1125,6 +1171,9 @@ async def pay_order(oid: str, data: OrderPayment, db: AsyncSession = Depends(get
             await broadcast_entity_update("room", "updated", {"id": o.room_id, "occupancy_status": "dirty"})
     await db.commit()
     await db.refresh(o)
+    # Deduct inventory for all items in this order now that payment is confirmed
+    for oi in o.items:
+        asyncio.create_task(_auto_deduct_ingredients(db, oi, o.branch_id))
     asyncio.create_task(log_audit(None, user["id"], user["name"], "order_paid", "order", oid,
                                    f"Paid {totals['total_amount']:.2f} ETB via {data.payment_method}",
                                    branch_id=o.branch_id))
@@ -1866,83 +1915,25 @@ async def startup():
 async def _seed():
     await asyncio.sleep(1)
     async with AsyncSessionLocal() as db:
-        # Default branch
+        # Default branch — create only if none exists
         branch = (await db.execute(select(Branch))).scalar_one_or_none()
         if not branch:
             branch = Branch(id=str(uuid.uuid4()), name="Main Bar & Restaurant",
-                            address="Bole Road, Addis Ababa", phone="+251911000001", manager_name="Owner")
+                            address="", phone="", manager_name="Owner")
             db.add(branch); await db.commit()
-            logger.info(f"Seeded branch: {branch.id}")
-        bid = branch.id
+            logger.info(f"Created default branch: {branch.id}")
 
-        # Owner account
+        # Owner account — create only if none exists
         admin_email = settings.admin_email or "owner@barrestaurant.com"
         admin_pw    = settings.admin_password or "owner123"
         owner = (await db.execute(select(User).where(User.email == admin_email))).scalar_one_or_none()
         if not owner:
             db.add(User(id=str(uuid.uuid4()), email=admin_email, password_hash=hash_password(admin_pw),
-                        name="Owner", role=policies.ROLE_SUPER_ADMIN, force_password_change=False)); await db.commit()
-            logger.info(f"Seeded owner: {admin_email}")
-
-        # Staff accounts
-        staff = [
-            ("manager@barrestaurant.com","manager123","Abebe Girma",  policies.ROLE_BRANCH_ADMIN, bid),
-            ("roommanager@barrestaurant.com","room123","Tigist Haile", policies.ROLE_ROOM_MANAGER, bid),
-            ("server@barrestaurant.com","server123","Yonas Tadesse",  policies.ROLE_SERVER, bid),
-            ("bartender@barrestaurant.com","bar123","Mekdes Alemu",   policies.ROLE_BARTENDER, bid),
-            ("kitchen@barrestaurant.com","kitchen123","Dawit Bekele", policies.ROLE_KITCHEN, bid),
-            ("cashier@barrestaurant.com","cashier123","Sara Mengistu", policies.ROLE_CASHIER, bid),
-        ]
-        for email, pw, name, role, branch_id in staff:
-            exists = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
-            if not exists:
-                db.add(User(id=str(uuid.uuid4()), email=email, password_hash=hash_password(pw),
-                            name=name, role=role, branch_id=branch_id, force_password_change=True))
-        await db.commit()
-
-        # Categories
-        for cat in ["Food","Drinks","Cocktails","Beer & Wine","Appetizers","Main Course","Desserts","Soft Drinks"]:
-            exists = (await db.execute(select(Category).where(Category.name == cat))).scalar_one_or_none()
-            if not exists: db.add(Category(id=str(uuid.uuid4()), name=cat, description=f"{cat} items"))
-        await db.commit()
-
-        # Menu items
-        menu_count = (await db.execute(select(func.count(MenuItem.id)))).scalar()
-        if menu_count == 0:
-            sample = [
-                ("Tibs (Beef)","ጥብስ","Main Course",180,80,False,"kitchen","Sautéed beef with herbs"),
-                ("Kitfo","ክትፎ","Main Course",220,100,False,"kitchen","Ethiopian steak tartare"),
-                ("Injera Firfir","ፍርፍር","Main Course",120,40,False,"kitchen","Shredded injera with berbere"),
-                ("Sambusa (3pc)","ሳምቡሳ","Appetizers",80,30,False,"kitchen","Crispy pastry with filling"),
-                ("Tej","ጠጅ","Beer & Wine",60,20,True,"bar","Ethiopian honey wine"),
-                ("St. George Beer","ቅዱስ ጊዮርጊስ","Beer & Wine",70,35,True,"bar","Local Ethiopian lager"),
-                ("Whisky (Single)","ዊስኪ","Drinks",150,70,True,"bar","Premium whisky"),
-                ("Mojito","ሞሂቶ","Cocktails",200,80,True,"bar","Classic rum cocktail"),
-                ("Buna (Coffee)","ቡና","Soft Drinks",50,15,False,"bar","Ethiopian coffee ceremony"),
-                ("Mango Juice","ማንጎ ጁስ","Soft Drinks",80,30,False,"bar","Fresh mango juice"),
-                ("Tiramisu","ቲራሚሱ","Desserts",120,50,False,"kitchen","Italian coffee dessert"),
-            ]
-            for name, name_am, cat, price, cost, alcohol, route, desc in sample:
-                db.add(MenuItem(id=str(uuid.uuid4()), name=name, name_am=name_am, category=cat,
-                                price=price, cost_price=cost, is_alcohol=alcohol,
-                                route_to=route, description=desc, branch_id=bid, prep_time=10))
-            await db.commit(); logger.info(f"Seeded {len(sample)} menu items")
-
-        # Rooms
-        room_count = (await db.execute(select(func.count(Room.id)))).scalar()
-        if room_count == 0:
-            rooms_data = [
-                ("VIP Lounge A","Private VIP room with karaoke",4,15,500,2000,["karaoke","projector","private_bar"]),
-                ("VIP Lounge B","Intimate VIP room",2,8,300,1000,["sound_system","private_bar"]),
-                ("Executive Suite","Large event room",10,40,1000,5000,["projector","sound_system","karaoke","dance_floor"]),
-                ("Garden Room","Outdoor terrace room",4,20,400,1500,["outdoor","garden_view"]),
-            ]
-            for name, desc, cmin, cmax, rate, mspend, amenities in rooms_data:
-                db.add(Room(id=str(uuid.uuid4()), name=name, description=desc,
-                            capacity_min=cmin, capacity_max=cmax, hourly_rate=rate,
-                            minimum_spend=mspend, amenities=amenities, branch_id=bid))
-            await db.commit(); logger.info(f"Seeded {len(rooms_data)} rooms")
-    logger.info("Seed complete.")
+                        name="Owner", role=policies.ROLE_SUPER_ADMIN, branch_id=branch.id,
+                        force_password_change=False))
+            await db.commit()
+            logger.info(f"Created owner account: {admin_email}")
+    logger.info("Startup complete — system ready for fresh setup.")
 
 from .database import AsyncSessionLocal
 

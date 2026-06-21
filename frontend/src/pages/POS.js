@@ -67,9 +67,7 @@ th:nth-child(2){text-align:center;}th:last-child{text-align:right;}
 <div class="line"></div>
 <table class="totals">
 <tr><td>Subtotal</td><td style="text-align:right">${fmtETB(order.subtotal)}</td></tr>
-<tr><td>Service Charge (10%)</td><td style="text-align:right">${fmtETB(order.service_charge)}</td></tr>
 <tr><td>VAT (15%)</td><td style="text-align:right">${fmtETB(order.vat_amount)}</td></tr>
-<tr><td>TOT (2%)</td><td style="text-align:right">${fmtETB(order.tot_amount)}</td></tr>
 ${order.discount_amount > 0 ? `<tr><td>Discount</td><td style="text-align:right">-${fmtETB(order.discount_amount)}</td></tr>` : ''}
 <tr class="total-row"><td>TOTAL</td><td style="text-align:right">${fmtETB(order.total_amount)}</td></tr>
 </table>
@@ -228,6 +226,7 @@ export const POS = () => {
 
     // ── Cart helpers ──────────────────────────────────────────────────────────
     const addToCart = (item) => {
+        if (item.out_of_stock) { toast.error(`${item.name} is out of stock`); return; }
         setCart(prev => {
             const ex = prev.find(c => c.menu_item_id === item.id);
             if (ex) return prev.map(c => c.menu_item_id === item.id ? { ...c, quantity: c.quantity + 1 } : c);
@@ -261,13 +260,10 @@ export const POS = () => {
         c.menu_item_id === itemId ? { ...c, modifiers: c.modifiers.filter(m => m !== mod) } : c
     ));
 
-    // ── Totals ────────────────────────────────────────────────────────────────
-    const subtotal       = cart.reduce((s, i) => s + i.unit_price * i.quantity, 0);
-    const serviceCharge  = subtotal * 0.10;
-    const taxBase        = subtotal + serviceCharge;
-    const vat            = taxBase * 0.15;
-    const tot            = taxBase * 0.02;
-    const total          = taxBase + vat + tot;
+    // ── Totals — matches Eltrade A3 (Subtotal + VAT 15% only) ───────────────
+    const subtotal = cart.reduce((s, i) => s + i.unit_price * i.quantity, 0);
+    const vat      = subtotal * 0.15;
+    const total    = subtotal + vat;
 
     // ── Send order to kitchen/bar ─────────────────────────────────────────────
     const handleSendOrder = async () => {
@@ -540,8 +536,16 @@ export const POS = () => {
                                 {filtered.map(item => {
                                     const inCart = cart.find(c => c.menu_item_id === item.id);
                                     return (
-                                        <button key={item.id} onClick={() => addToCart(item)} className="pos-item p-3 text-center relative">
-                                            {inCart && <span className="absolute top-2 right-2 w-5 h-5 rounded-full text-white text-xs font-bold flex items-center justify-center bg-amber-500">{inCart.quantity}</span>}
+                                        <button key={item.id} onClick={() => addToCart(item)}
+                                            disabled={item.out_of_stock}
+                                            className={`pos-item p-3 text-center relative transition-all ${item.out_of_stock ? 'opacity-40 cursor-not-allowed' : ''}`}>
+                                            {item.out_of_stock && (
+                                                <div className="absolute inset-0 flex items-center justify-center rounded-2xl z-10"
+                                                    style={{ background: 'rgba(0,0,0,0.35)', backdropFilter: 'blur(2px)' }}>
+                                                    <span className="text-white text-xs font-bold px-2 py-1 rounded-lg"
+                                                        style={{ background: 'rgba(239,68,68,0.85)' }}>Out of Stock</span>
+                                                </div>
+                                            )}
                                             <div className="w-12 h-12 rounded-2xl flex items-center justify-center mb-2 mx-auto text-2xl"
                                                 style={{ background: item.route_to === 'bar' ? 'rgba(59,130,246,0.1)' : 'rgba(245,158,11,0.1)' }}>
                                                 {item.route_to === 'bar' ? '🍸' : item.is_alcohol ? '🍺' : '🍽️'}
@@ -642,7 +646,7 @@ export const POS = () => {
 
                     {/* Totals + send */}
                     <div className="p-4 space-y-2 border-t" style={{ borderColor: 'var(--border-light)' }}>
-                        {[['Subtotal', subtotal], ['Service (10%)', serviceCharge], ['VAT (15%)', vat], ['TOT (2%)', tot]].map(([l, v]) => (
+                        {[['Subtotal', subtotal], ['VAT (15%)', vat]].map(([l, v]) => (
                             <div key={l} className="flex justify-between text-xs" style={{ color: 'var(--text-muted)' }}>
                                 <span>{l}</span><span>{fmtETB(v)}</span>
                             </div>
