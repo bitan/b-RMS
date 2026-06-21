@@ -1152,7 +1152,7 @@ async def pay_order(oid: str, data: OrderPayment, db: AsyncSession = Depends(get
             paid_by=user["id"],
             paid_by_name=user["name"],
             discount_amount=totals["discount_amount"],
-            tax_amount=totals["tax_amount"],
+            vat_amount=totals["vat_amount"],
             total_amount=totals["total_amount"],
         )
     )
