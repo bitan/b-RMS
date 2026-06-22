@@ -1306,21 +1306,38 @@ async def dashboard_stats(db: AsyncSession = Depends(get_db), user=Depends(get_c
     yesterday = today - timedelta(days=1)
     month_start = today.replace(day=1)
     bfilter = [] if policies.is_super_admin(user) else [Order.branch_id == user.get("branch_id")]
+    rc_bfilter = [] if policies.is_super_admin(user) else [RoomCharge.branch_id == user.get("branch_id")]
 
     async def order_agg(start, end=None):
-        # Only count PAID orders in revenue — unpaid/cancelled don't count
         q = select(func.sum(Order.total_amount), func.count(Order.id)).where(
             Order.created_at >= start,
-            Order.payment_status == "paid",   # ← only confirmed payments
+            Order.payment_status == "paid",
             Order.is_voided == False,
             *bfilter)
         if end: q = q.where(Order.created_at < end)
         r = (await db.execute(q)).one()
         return float(r[0] or 0), int(r[1] or 0)
 
-    today_rev, today_orders     = await order_agg(today)
-    yest_rev,  yest_orders      = await order_agg(yesterday, today)
-    month_rev, month_orders     = await order_agg(month_start)
+    async def room_charge_agg(start, end=None):
+        """Sum room fee payments for a given period."""
+        q = select(func.sum(RoomCharge.room_fee)).where(
+            RoomCharge.created_at >= start, *rc_bfilter)
+        if end: q = q.where(RoomCharge.created_at < end)
+        r = (await db.execute(q)).scalar()
+        return float(r or 0)
+
+    today_rev, today_orders = await order_agg(today)
+    yest_rev,  yest_orders  = await order_agg(yesterday, today)
+    month_rev, month_orders = await order_agg(month_start)
+
+    # Add room charges to revenue totals
+    today_room_rev = await room_charge_agg(today)
+    yest_room_rev  = await room_charge_agg(yesterday, today)
+    month_room_rev = await room_charge_agg(month_start)
+
+    today_rev  += today_room_rev
+    yest_rev   += yest_room_rev
+    month_rev  += month_room_rev
 
     room_q = select(Room)
     if not policies.is_super_admin(user): room_q = room_q.where(Room.branch_id == user.get("branch_id"))
@@ -1338,6 +1355,7 @@ async def dashboard_stats(db: AsyncSession = Depends(get_db), user=Depends(get_c
 
     return {
         "today_revenue": today_rev, "today_orders": today_orders,
+        "today_room_charges": today_room_rev,
         "yesterday_revenue": yest_rev, "yesterday_orders": yest_orders,
         "revenue_change_pct": round(((today_rev - yest_rev) / yest_rev * 100), 1) if yest_rev > 0 else None,
         "orders_change_pct":  round(((today_orders - yest_orders) / yest_orders * 100), 1) if yest_orders > 0 else None,
