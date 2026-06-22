@@ -52,6 +52,7 @@ async def create_tables():
         # Safe migrations — add columns that may not exist in older deployments
         migrations = [
             "ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS deduct_on_order BOOLEAN DEFAULT FALSE",
+            # room_charges table is created by create_all above — no manual migration needed
         ]
         for sql in migrations:
             try:
@@ -178,6 +179,39 @@ class Room(Base):
     branch       : Mapped["Branch"]            = relationship(back_populates="rooms")
     reservations : Mapped[List["Reservation"]] = relationship(back_populates="room")
     orders       : Mapped[List["Order"]]       = relationship(back_populates="room")
+    charges      : Mapped[List["RoomCharge"]]  = relationship(back_populates="room")
+
+
+class RoomCharge(Base):
+    """Tracks room fee payments separately from food/drink orders."""
+    __tablename__ = "room_charges"
+    id               : Mapped[str] = mapped_column(String(36), primary_key=True)
+    room_id          : Mapped[str] = mapped_column(ForeignKey("rooms.id"))
+    reservation_id   : Mapped[Optional[str]] = mapped_column(ForeignKey("reservations.id"), nullable=True)
+    # Customer info (copied at time of charge for history)
+    customer_name    : Mapped[str] = mapped_column(String(200))
+    customer_phone   : Mapped[Optional[str]] = mapped_column(String(30))
+    party_size       : Mapped[Optional[int]] = mapped_column(Integer)
+    # Session details
+    start_datetime   : Mapped[Optional[str]] = mapped_column(String(50))
+    end_datetime     : Mapped[Optional[str]] = mapped_column(String(50))
+    # Charge details
+    hours            : Mapped[Optional[float]] = mapped_column(Float)
+    hourly_rate      : Mapped[Optional[float]] = mapped_column(Float)
+    room_fee         : Mapped[float] = mapped_column(Float, default=0)
+    payment_method   : Mapped[str] = mapped_column(String(20), default="cash")
+    payment_reference: Mapped[Optional[str]] = mapped_column(String(200))
+    notes            : Mapped[Optional[str]] = mapped_column(Text)
+    # Who processed it
+    cashier_id       : Mapped[str] = mapped_column(String(36))
+    cashier_name     : Mapped[str] = mapped_column(String(200))
+    branch_id        : Mapped[str] = mapped_column(ForeignKey("branches.id"))
+    created_at       : Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    room        : Mapped["Room"]               = relationship(back_populates="charges")
+    reservation : Mapped[Optional["Reservation"]] = relationship()
+
+    __table_args__ = (Index("ix_room_charges_room", "room_id"), Index("ix_room_charges_date", "created_at"),)
 
 
 class Reservation(Base):

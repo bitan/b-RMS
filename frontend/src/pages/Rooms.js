@@ -194,10 +194,17 @@ export const Rooms = () => {
     const [editingRoom, setEditingRoom] = useState(null);
     const [saving, setSaving] = useState(false);
     const [filterStatus, setFilterStatus] = useState('all');
+    const [chargeRoom, setChargeRoom] = useState(null);
+    const [chargeForm, setChargeForm] = useState({ customer_name:'', customer_phone:'', party_size:'', start_datetime:'', end_datetime:'', hours:'', room_fee:'', payment_method:'cash', notes:'' });
+    const [chargeLoading, setChargeLoading] = useState(false);
+    const [historyRoom, setHistoryRoom] = useState(null);
+    const [historyData, setHistoryData] = useState(null);
+    const [historyLoading, setHistoryLoading] = useState(false);
 
     const canManage   = [ROLES.OWNER, ROLES.MANAGER].includes(user?.role);
     const canCashier  = user?.role === ROLES.CASHIER;
     const canRoomMgr  = user?.role === ROLES.ROOM_MANAGER;
+    const canHistory  = [ROLES.OWNER, ROLES.MANAGER, ROLES.ROOM_MANAGER, ROLES.CASHIER].includes(user?.role);
 
     const fetchRooms = useCallback(async () => {
         try {
@@ -243,6 +250,31 @@ export const Rooms = () => {
         } catch (err) { toast.error(err.response?.data?.detail || 'Failed to delete room'); }
     };
 
+    const openCharge = (room) => {
+        setChargeRoom(room);
+        setChargeForm({ customer_name:'', customer_phone:'', party_size:'', start_datetime: new Date().toISOString().slice(0,16), end_datetime:'', hours:'', room_fee: room.hourly_rate || '', payment_method:'cash', notes:'' });
+    };
+    const handleCharge = async (e) => {
+        e.preventDefault();
+        if (!chargeForm.customer_name.trim()) { toast.error('Customer name required'); return; }
+        if (!chargeForm.room_fee || parseFloat(chargeForm.room_fee) <= 0) { toast.error('Room fee must be > 0'); return; }
+        setChargeLoading(true);
+        try {
+            await axios.post(`${API}/room-charges`, { room_id: chargeRoom.id, customer_name: chargeForm.customer_name, customer_phone: chargeForm.customer_phone, party_size: chargeForm.party_size ? parseInt(chargeForm.party_size) : null, start_datetime: chargeForm.start_datetime, end_datetime: chargeForm.end_datetime, hours: chargeForm.hours ? parseFloat(chargeForm.hours) : null, hourly_rate: chargeRoom.hourly_rate, room_fee: parseFloat(chargeForm.room_fee), payment_method: chargeForm.payment_method, notes: chargeForm.notes }, { withCredentials: true });
+            toast.success(`Room fee ${fmtETB(chargeForm.room_fee)} collected from ${chargeForm.customer_name}`);
+            setChargeRoom(null); fetchRooms();
+        } catch (err) { toast.error(err.response?.data?.detail || 'Charge failed'); }
+        finally { setChargeLoading(false); }
+    };
+    const openHistory = async (room) => {
+        setHistoryRoom(room); setHistoryData(null); setHistoryLoading(true);
+        try {
+            const res = await axios.get(`${API}/rooms/${room.id}/history`, { withCredentials: true });
+            setHistoryData(res.data);
+        } catch { toast.error('Failed to load history'); }
+        finally { setHistoryLoading(false); }
+    };
+
     const filteredRooms = filterStatus === 'all' ? rooms : rooms.filter(r => r.occupancy_status === filterStatus);
 
     return (
@@ -255,9 +287,7 @@ export const Rooms = () => {
                     </p>
                 </div>
                 <div className="flex items-center gap-3">
-                    <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}
-                        className="text-sm px-3 py-2 rounded-xl border outline-none focus:border-amber-500 transition-all"
-                        style={{ background: 'var(--bg-card)', borderColor: 'var(--border)', color: 'var(--text-primary)' }}>
+                    <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className="text-sm px-3 py-2 rounded-xl border outline-none focus:border-amber-500 transition-all" style={{ background: 'var(--bg-card)', borderColor: 'var(--border)', color: 'var(--text-primary)' }}>
                         <option value="all">All Rooms</option>
                         <option value="available">Available</option>
                         <option value="occupied">Occupied</option>
@@ -265,9 +295,7 @@ export const Rooms = () => {
                         <option value="dirty">Cleaning</option>
                     </select>
                     {canManage && (
-                        <button onClick={() => { setEditingRoom(null); setShowForm(true); }}
-                            className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold text-white shadow-lg transition-all hover:-translate-y-0.5"
-                            style={{ background: 'linear-gradient(135deg,#F59E0B,#D97706)' }}>
+                        <button onClick={() => { setEditingRoom(null); setShowForm(true); }} className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold text-white shadow-lg transition-all hover:-translate-y-0.5" style={{ background: 'linear-gradient(135deg,#F59E0B,#D97706)' }}>
                             <Plus className="w-4 h-4" />Add Room
                         </button>
                     )}
@@ -281,34 +309,132 @@ export const Rooms = () => {
             ) : filteredRooms.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-64 gap-3" style={{ color: 'var(--text-muted)' }}>
                     <BedDouble className="w-12 h-12 opacity-30" />
-                    <p>{filterStatus === 'all' ? 'No rooms yet — add one to get started' : `No ${filterStatus} rooms`}</p>
+                    <p>{filterStatus === 'all' ? 'No rooms yet' : `No ${filterStatus} rooms`}</p>
                 </div>
             ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                     {filteredRooms.map(room => (
-                        <RoomCard key={room.id} room={room}
-                            canManage={canManage}
-                            canCashier={canCashier}
-                            canRoomManager={canRoomMgr}
-                            onStatusChange={handleStatusChange}
-                            onEdit={r => { setEditingRoom(r); setShowForm(true); }}
-                            onDelete={handleDelete} />
+                        <div key={room.id} className="flex flex-col gap-2">
+                            <RoomCard room={room} canManage={canManage} canCashier={canCashier} canRoomManager={canRoomMgr}
+                                onStatusChange={handleStatusChange}
+                                onEdit={r => { setEditingRoom(r); setShowForm(true); }}
+                                onDelete={handleDelete} />
+                            <div className="flex gap-2">
+                                {canCashier && (
+                                    <button onClick={() => openCharge(room)} className="flex-1 py-2 rounded-xl text-xs font-bold text-white" style={{ background: 'linear-gradient(135deg,#10B981,#059669)' }}>
+                                        💳 Charge Room Fee
+                                    </button>
+                                )}
+                                {canHistory && (
+                                    <button onClick={() => openHistory(room)} className="flex-1 py-2 rounded-xl text-xs font-semibold border" style={{ borderColor:'var(--border)', color:'var(--text-secondary)', background:'var(--bg-card)' }}>
+                                        📋 History
+                                    </button>
+                                )}
+                            </div>
+                        </div>
                     ))}
                 </div>
             )}
 
-            {/* Form modal */}
-            {showForm && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)' }}>
-                    <div className="w-full max-w-lg rounded-3xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto" style={{ background: 'var(--bg-card)' }}>
-                        <div className="flex items-center justify-between mb-6">
-                            <h3 className="text-base font-bold" style={{ color: 'var(--text-primary)' }}>
-                                {editingRoom ? 'Edit Room' : 'Add Room'}
-                            </h3>
-                            <button onClick={() => { setShowForm(false); setEditingRoom(null); }}
-                                className="p-2 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors" style={{ color: 'var(--text-muted)' }}>
-                                <X className="w-4 h-4" />
+            {/* ── Charge Room Fee Modal ── */}
+            {chargeRoom && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background:'rgba(0,0,0,0.5)', backdropFilter:'blur(4px)' }}>
+                    <div className="w-full max-w-md rounded-3xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto" style={{ background:'var(--bg-card)' }}>
+                        <div className="flex items-center justify-between mb-4">
+                            <div><h3 className="font-bold" style={{ color:'var(--text-primary)' }}>Charge Room Fee</h3>
+                            <p className="text-xs" style={{ color:'var(--text-muted)' }}>{chargeRoom.name}</p></div>
+                            <button onClick={() => setChargeRoom(null)} style={{ color:'var(--text-muted)' }}><X className="w-4 h-4" /></button>
+                        </div>
+                        <form onSubmit={handleCharge} className="space-y-3">
+                            <div><label className="block text-xs font-semibold mb-1 uppercase tracking-wider" style={{ color:'var(--text-muted)' }}>Customer Name *</label>
+                            <input value={chargeForm.customer_name} onChange={e => setChargeForm(f => ({...f, customer_name:e.target.value}))} required placeholder="Full name" className="w-full px-4 py-2.5 text-sm rounded-xl border outline-none focus:border-amber-500" style={{ background:'var(--bg-page)', borderColor:'var(--border)', color:'var(--text-primary)' }} /></div>
+                            <div className="grid grid-cols-2 gap-3">
+                                <div><label className="block text-xs font-semibold mb-1 uppercase tracking-wider" style={{ color:'var(--text-muted)' }}>Phone</label>
+                                <input value={chargeForm.customer_phone} onChange={e => setChargeForm(f => ({...f, customer_phone:e.target.value}))} placeholder="09xxxxxxxx" className="w-full px-4 py-2.5 text-sm rounded-xl border outline-none focus:border-amber-500" style={{ background:'var(--bg-page)', borderColor:'var(--border)', color:'var(--text-primary)' }} /></div>
+                                <div><label className="block text-xs font-semibold mb-1 uppercase tracking-wider" style={{ color:'var(--text-muted)' }}>Party Size</label>
+                                <input type="number" min="1" value={chargeForm.party_size} onChange={e => setChargeForm(f => ({...f, party_size:e.target.value}))} placeholder="e.g. 8" className="w-full px-4 py-2.5 text-sm rounded-xl border outline-none focus:border-amber-500" style={{ background:'var(--bg-page)', borderColor:'var(--border)', color:'var(--text-primary)' }} /></div>
+                                <div><label className="block text-xs font-semibold mb-1 uppercase tracking-wider" style={{ color:'var(--text-muted)' }}>Start Time</label>
+                                <input type="datetime-local" value={chargeForm.start_datetime} onChange={e => setChargeForm(f => ({...f, start_datetime:e.target.value}))} className="w-full px-4 py-2.5 text-sm rounded-xl border outline-none focus:border-amber-500" style={{ background:'var(--bg-page)', borderColor:'var(--border)', color:'var(--text-primary)' }} /></div>
+                                <div><label className="block text-xs font-semibold mb-1 uppercase tracking-wider" style={{ color:'var(--text-muted)' }}>End Time</label>
+                                <input type="datetime-local" value={chargeForm.end_datetime} onChange={e => setChargeForm(f => ({...f, end_datetime:e.target.value}))} className="w-full px-4 py-2.5 text-sm rounded-xl border outline-none focus:border-amber-500" style={{ background:'var(--bg-page)', borderColor:'var(--border)', color:'var(--text-primary)' }} /></div>
+                                <div><label className="block text-xs font-semibold mb-1 uppercase tracking-wider" style={{ color:'var(--text-muted)' }}>Hours</label>
+                                <input type="number" min="0" step="0.5" value={chargeForm.hours} onChange={e => { const h=parseFloat(e.target.value)||0; setChargeForm(f => ({...f, hours:e.target.value, room_fee: chargeRoom.hourly_rate?(h*chargeRoom.hourly_rate).toFixed(2):f.room_fee})); }} placeholder="e.g. 3" className="w-full px-4 py-2.5 text-sm rounded-xl border outline-none focus:border-amber-500" style={{ background:'var(--bg-page)', borderColor:'var(--border)', color:'var(--text-primary)' }} /></div>
+                                <div><label className="block text-xs font-semibold mb-1 uppercase tracking-wider" style={{ color:'var(--text-muted)' }}>Room Fee (ETB) *</label>
+                                <input type="number" min="0" step="0.01" value={chargeForm.room_fee} onChange={e => setChargeForm(f => ({...f, room_fee:e.target.value}))} required className="w-full px-4 py-2.5 text-sm rounded-xl border outline-none focus:border-amber-500 font-bold" style={{ background:'var(--bg-page)', borderColor:'var(--border)', color:'#D97706' }} /></div>
+                            </div>
+                            <div><label className="block text-xs font-semibold mb-1 uppercase tracking-wider" style={{ color:'var(--text-muted)' }}>Payment Method</label>
+                            <div className="grid grid-cols-4 gap-2">
+                                {['cash','card','telebirr','credit'].map(m => (
+                                    <button key={m} type="button" onClick={() => setChargeForm(f => ({...f, payment_method:m}))} className={`py-2 rounded-xl text-xs font-semibold border capitalize ${chargeForm.payment_method===m?'text-white border-amber-500':''}`} style={chargeForm.payment_method===m?{background:'linear-gradient(135deg,#F59E0B,#D97706)'}:{background:'var(--bg-page)',color:'var(--text-secondary)',borderColor:'var(--border)'}}>{m}</button>
+                                ))}
+                            </div></div>
+                            <button type="submit" disabled={chargeLoading} className="w-full py-3 rounded-2xl text-sm font-bold text-white disabled:opacity-50" style={{ background:'linear-gradient(135deg,#10B981,#059669)' }}>
+                                {chargeLoading ? 'Processing…' : `Confirm · ${fmtETB(chargeForm.room_fee||0)}`}
                             </button>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {/* ── Room History Modal ── */}
+            {historyRoom && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background:'rgba(0,0,0,0.5)', backdropFilter:'blur(4px)' }}>
+                    <div className="w-full max-w-2xl rounded-3xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto" style={{ background:'var(--bg-card)' }}>
+                        <div className="flex items-center justify-between mb-4">
+                            <div><h3 className="font-bold" style={{ color:'var(--text-primary)' }}>{historyRoom.name} — History</h3>
+                            {historyData && <p className="text-xs text-amber-600 font-semibold">Total Revenue: {fmtETB(historyData.total_revenue)}</p>}</div>
+                            <button onClick={() => { setHistoryRoom(null); setHistoryData(null); }} style={{ color:'var(--text-muted)' }}><X className="w-4 h-4" /></button>
+                        </div>
+                        {historyLoading ? <div className="space-y-3">{[1,2,3].map(i => <div key={i} className="h-16 rounded-xl animate-pulse" style={{ background:'var(--bg-page)' }} />)}</div>
+                        : historyData ? (
+                            <div className="space-y-5">
+                                <div>
+                                    <h4 className="text-xs font-bold uppercase tracking-wider mb-2" style={{ color:'var(--text-muted)' }}>💳 Room Fee Payments ({historyData.charges.length})</h4>
+                                    {historyData.charges.length === 0 ? <p className="text-xs" style={{ color:'var(--text-muted)' }}>No room charges yet</p> : (
+                                        <div className="space-y-2">{historyData.charges.map(c => (
+                                            <div key={c.id} className="rounded-xl p-4 border" style={{ background:'var(--bg-page)', borderColor:'var(--border)' }}>
+                                                <div className="flex items-start justify-between">
+                                                    <div>
+                                                        <p className="font-semibold text-sm" style={{ color:'var(--text-primary)' }}>{c.customer_name}</p>
+                                                        <p className="text-xs mt-0.5" style={{ color:'var(--text-muted)' }}>{c.customer_phone && `📞 ${c.customer_phone} · `}{c.party_size && `👥 ${c.party_size} guests · `}{c.hours && `⏱ ${c.hours}hrs · `}{new Date(c.created_at).toLocaleString('en-ET')}</p>
+                                                        {c.start_datetime && <p className="text-xs" style={{ color:'var(--text-muted)' }}>🕐 {c.start_datetime} → {c.end_datetime||'—'}</p>}
+                                                    </div>
+                                                    <div className="text-right"><p className="font-bold text-emerald-600">{fmtETB(c.room_fee)}</p><p className="text-xs capitalize" style={{ color:'var(--text-muted)' }}>{c.payment_method}</p></div>
+                                                </div>
+                                            </div>
+                                        ))}</div>
+                                    )}
+                                </div>
+                                <div>
+                                    <h4 className="text-xs font-bold uppercase tracking-wider mb-2" style={{ color:'var(--text-muted)' }}>🍽️ Food & Drink Orders ({historyData.orders.length})</h4>
+                                    {historyData.orders.length === 0 ? <p className="text-xs" style={{ color:'var(--text-muted)' }}>No orders for this room</p> : (
+                                        <div className="space-y-2">{historyData.orders.map(o => (
+                                            <div key={o.id} className="rounded-xl p-4 border" style={{ background:'var(--bg-page)', borderColor:'var(--border)' }}>
+                                                <div className="flex items-start justify-between">
+                                                    <div>
+                                                        <p className="font-semibold text-sm" style={{ color:'var(--text-primary)' }}>Order #{(o.id||'').slice(-6).toUpperCase()}</p>
+                                                        <p className="text-xs" style={{ color:'var(--text-muted)' }}>{o.items?.length} items · {o.server_name} · {new Date(o.created_at).toLocaleString('en-ET')}</p>
+                                                        <p className="text-xs" style={{ color:'var(--text-muted)' }}>{o.items?.map(i => `${i.quantity}× ${i.menu_item_name}`).join(', ')}</p>
+                                                    </div>
+                                                    <div className="text-right"><p className={`font-bold ${o.payment_status==='paid'?'text-emerald-600':'text-amber-600'}`}>{fmtETB(o.total_amount)}</p><p className="text-xs capitalize" style={{ color:'var(--text-muted)' }}>{o.payment_status}</p></div>
+                                                </div>
+                                            </div>
+                                        ))}</div>
+                                    )}
+                                </div>
+                            </div>
+                        ) : null}
+                    </div>
+                </div>
+            )}
+
+            {/* ── Add/Edit Room Modal ── */}
+            {showForm && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background:'rgba(0,0,0,0.5)', backdropFilter:'blur(4px)' }}>
+                    <div className="w-full max-w-lg rounded-3xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto" style={{ background:'var(--bg-card)' }}>
+                        <div className="flex items-center justify-between mb-6">
+                            <h3 className="text-base font-bold" style={{ color:'var(--text-primary)' }}>{editingRoom ? 'Edit Room' : 'Add Room'}</h3>
+                            <button onClick={() => { setShowForm(false); setEditingRoom(null); }} className="p-2 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors" style={{ color:'var(--text-muted)' }}><X className="w-4 h-4" /></button>
                         </div>
                         <RoomForm initial={editingRoom} onSave={handleSave} onCancel={() => { setShowForm(false); setEditingRoom(null); }} loading={saving} />
                     </div>

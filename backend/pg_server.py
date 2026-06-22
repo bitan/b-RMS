@@ -23,7 +23,7 @@ from sqlalchemy.orm import selectinload
 from .config import settings
 from .database import (
     get_db, create_tables, engine,
-    Branch, User, Room, Reservation, Category, MenuItem,
+    Branch, User, Room, Reservation, RoomCharge, Category, MenuItem,
     Ingredient, Recipe, Order, OrderItem, Shift,
     Supplier, AuditLog, HappyHour, WasteLog, RefreshToken,
     VoidRequest, SplitBill, InventoryDeduction,
@@ -815,6 +815,103 @@ async def delete_room(rid: str, db: AsyncSession = Depends(get_db), user=Depends
     await db.commit()
     await broadcast_entity_update("room", "deleted", {"id": rid})
     return {"message": "Room deleted"}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ROOM CHARGES — fee payment for room usage
+# ══════════════════════════════════════════════════════════════════════════════
+class RoomChargeCreate(BaseModel):
+    room_id: str
+    reservation_id: Optional[str] = None
+    customer_name: str
+    customer_phone: Optional[str] = None
+    party_size: Optional[int] = None
+    start_datetime: Optional[str] = None
+    end_datetime: Optional[str] = None
+    hours: Optional[float] = None
+    hourly_rate: Optional[float] = None
+    room_fee: float
+    payment_method: str = "cash"
+    payment_reference: Optional[str] = None
+    notes: Optional[str] = None
+
+@app.post("/api/room-charges")
+async def create_room_charge(data: RoomChargeCreate, db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
+    """Cashier charges a customer for room usage — separate from food/drink orders."""
+    if user["role"] not in policies.PAYMENT_ROLES: raise HTTPException(403, "Only cashiers can process room charges")
+    branch_id = await _resolve_bid(user, db)
+    charge = RoomCharge(
+        id=str(uuid.uuid4()),
+        room_id=data.room_id,
+        reservation_id=data.reservation_id,
+        customer_name=data.customer_name,
+        customer_phone=data.customer_phone,
+        party_size=data.party_size,
+        start_datetime=data.start_datetime,
+        end_datetime=data.end_datetime,
+        hours=data.hours,
+        hourly_rate=data.hourly_rate,
+        room_fee=data.room_fee,
+        payment_method=data.payment_method,
+        payment_reference=data.payment_reference,
+        notes=data.notes,
+        cashier_id=user["id"],
+        cashier_name=user["name"],
+        branch_id=branch_id,
+    )
+    db.add(charge)
+    await db.commit()
+    asyncio.create_task(log_audit(None, user["id"], user["name"], "room_charge_collected", "room",
+        data.room_id, f"Room fee {data.room_fee:.2f} ETB from {data.customer_name} via {data.payment_method}",
+        branch_id=branch_id))
+    await broadcast_entity_update("room", "charge_collected", {"id": data.room_id, "room_fee": data.room_fee})
+    return _row(charge)
+
+@app.get("/api/room-charges")
+async def get_room_charges(db: AsyncSession = Depends(get_db), user=Depends(get_current_user),
+                            room_id: Optional[str] = None, date_from: Optional[str] = None,
+                            date_to: Optional[str] = None, skip: int = 0, limit: int = 100):
+    """Room history — all charges with customer info. Accessible to owner, manager, room_manager, cashier."""
+    if user["role"] not in policies.ROOM_ACCESS_ROLES: raise HTTPException(403, "Access denied")
+    q = select(RoomCharge)
+    if not policies.is_super_admin(user): q = q.where(RoomCharge.branch_id == user.get("branch_id"))
+    if room_id:    q = q.where(RoomCharge.room_id == room_id)
+    if date_from:  q = q.where(RoomCharge.created_at >= date_from)
+    if date_to:    q = q.where(RoomCharge.created_at <= date_to)
+    q = q.order_by(RoomCharge.created_at.desc())
+    rows = (await db.execute(q.offset(skip).limit(limit))).scalars().all()
+    # Enrich with room name
+    result = []
+    for c in rows:
+        d = _row(c)
+        room = await db.get(Room, c.room_id)
+        d["room_name"] = room.name if room else ""
+        result.append(d)
+    return result
+
+@app.get("/api/rooms/{rid}/history")
+async def get_room_history(rid: str, db: AsyncSession = Depends(get_db), user=Depends(get_current_user),
+                            skip: int = 0, limit: int = 50):
+    """Full history for a specific room — charges + orders linked to room."""
+    if user["role"] not in policies.ROOM_ACCESS_ROLES: raise HTTPException(403, "Access denied")
+    room = await db.get(Room, rid)
+    if not room: raise HTTPException(404, "Room not found")
+    # Room charges (fee payments)
+    charges = (await db.execute(
+        select(RoomCharge).where(RoomCharge.room_id == rid)
+        .order_by(RoomCharge.created_at.desc()).offset(skip).limit(limit)
+    )).scalars().all()
+    # Past orders linked to this room
+    orders = (await db.execute(
+        select(Order).where(Order.room_id == rid)
+        .options(selectinload(Order.items))
+        .order_by(Order.created_at.desc()).offset(skip).limit(limit)
+    )).scalars().all()
+    return {
+        "room": _row(room),
+        "charges": [_row(c) for c in charges],
+        "orders": [_order_to_dict(o) for o in orders],
+        "total_revenue": sum(c.room_fee for c in charges) + sum(o.total_amount for o in orders if o.payment_status == "paid"),
+    }
 
 # ══════════════════════════════════════════════════════════════════════════════
 # RESERVATIONS
