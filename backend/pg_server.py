@@ -1496,7 +1496,7 @@ async def daily_report(date: Optional[str] = None, db: AsyncSession = Depends(ge
         "voided_details": [{"id": o.id, "total": o.total_amount, "reason": o.void_reason, "server": o.server_name} for o in voided_orders],
     }
 
-
+@app.get("/api/reports/sales-by-date")
 async def sales_by_date(days: int = 7, db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
     since = datetime.now(timezone.utc) - timedelta(days=days)
     bfilter = [] if policies.is_super_admin(user) else [Order.branch_id == user.get("branch_id")]
