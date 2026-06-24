@@ -396,8 +396,16 @@ export const OrderDisplay = () => {
                 playChime();
                 toast.success(`🔔 ${data.data?.menu_item_name || 'Item'} is READY`, { duration: 8000 });
             }
+            // Owner order alert — notify the assigned server
+            if (data.action === 'created' && data.data?.is_owner_order && data.data?.assigned_server_id === user?.id) {
+                playChime(); playChime(); // double chime
+                toast.warning(
+                    `👑 Owner Order — assigned to you!\nTable: ${data.data?.table_number || 'N/A'} · ${data.data?.items_count} items`,
+                    { duration: 15000, id: 'owner-order-alert' }
+                );
+            }
         }
-    }, [fetchOrders]));
+    }, [fetchOrders, user?.id]));
 
     const handleMarkServed = async (orderId, itemId) => {
         try {
@@ -439,12 +447,21 @@ export const OrderDisplay = () => {
             if (filterStatus === 'paid')   return o.payment_status === 'paid';
             return true;
         })
+        // Servers only see their own orders + orders assigned to them by owner
+        .filter(o => {
+            if (isCashier) return true; // cashiers see all
+            if (!isServer) return true;
+            return o.server_id === user?.id || o.assigned_server_id === user?.id;
+        })
         .sort((a, b) => {
-            // Ready items first, then by age
+            // Owner-assigned orders first, then ready items, then by age
+            const aOwner = a.assigned_server_id ? 1 : 0;
+            const bOwner = b.assigned_server_id ? 1 : 0;
+            if (bOwner !== aOwner) return bOwner - aOwner;
             const aReady = a.items?.some(i => i.status === 'ready') ? 1 : 0;
             const bReady = b.items?.some(i => i.status === 'ready') ? 1 : 0;
             if (bReady !== aReady) return bReady - aReady;
-            return new Date(a.created_at) - new Date(b.created_at); // oldest first
+            return new Date(a.created_at) - new Date(b.created_at);
         });
 
     return (

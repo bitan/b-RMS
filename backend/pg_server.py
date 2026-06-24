@@ -1058,16 +1058,28 @@ async def create_order(data: OrderCreate, request: Request, db: AsyncSession = D
     notes = data.notes or ""
     if active_hh:
         notes = f"[Happy Hour: {active_hh.name} {active_hh.discount_percent}% off] {notes}".strip()
+
+    # Extract assigned server ID from owner order notes
+    import re as _re2
+    assigned_server_id = None
+    assigned_server_name = None
+    if user["role"] == policies.ROLE_SUPER_ADMIN and "[Owner Order" in notes:
+        m = _re2.search(r'assigned to server ID: ([a-f0-9\-]+)', notes)
+        if m:
+            assigned_server_id = m.group(1)
+            srv = await db.get(User, assigned_server_id)
+            if srv: assigned_server_name = srv.name
+
     order = Order(id=str(uuid.uuid4()), branch_id=branch_id, server_id=user["id"],
                   server_name=user["name"], room_id=data.room_id, table_number=data.table_number,
                   reservation_id=data.reservation_id, order_type=data.order_type,
                   order_source=data.order_source, notes=notes, idempotency_key=ikey,
+                  assigned_server_id=assigned_server_id, assigned_server_name=assigned_server_name,
                   **totals, items=order_items)
     db.add(order)
     if data.room_id:
         room = await db.get(Room, data.room_id)
         if room: room.occupancy_status = "occupied"
-        # Minimum spend check — warn in notes but don't block (cashier handles at payment)
         if room and room.minimum_spend > 0 and totals["subtotal"] < room.minimum_spend:
             order.notes = (order.notes or "") + f" [⚠️ Below minimum spend: {room.minimum_spend:.2f} ETB]"
     await db.commit()
@@ -1075,11 +1087,16 @@ async def create_order(data: OrderCreate, request: Request, db: AsyncSession = D
         "id": order.id, "status": "open", "room_id": data.room_id,
         "table_number": data.table_number, "server_name": user["name"],
         "total_amount": totals["total_amount"], "items_count": len(order_items),
+        # Targeted notification for assigned server
+        "assigned_server_id": assigned_server_id,
+        "assigned_server_name": assigned_server_name,
+        "is_owner_order": user["role"] == policies.ROLE_SUPER_ADMIN,
     }))
     asyncio.create_task(log_audit(None, user["id"], user["name"], "order_created", "order",
         order.id,
         f"{len(order_items)} items · {totals['total_amount']:.2f} ETB"
-        + (f" · Room" if data.room_id else f" · Table {data.table_number}" if data.table_number else ""),
+        + (f" · Room" if data.room_id else f" · Table {data.table_number}" if data.table_number else "")
+        + (f" · Assigned to {assigned_server_name}" if assigned_server_name else ""),
         branch_id=branch_id))
     return _order_to_dict(order)
 
@@ -1366,7 +1383,120 @@ async def dashboard_stats(db: AsyncSession = Depends(get_db), user=Depends(get_c
         "total_employees": staff_count, "low_stock_count": low_stock,
     }
 
-@app.get("/api/reports/sales-by-date")
+@app.get("/api/reports/daily")
+async def daily_report(date: Optional[str] = None, db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
+    """Detailed daily report — orders, revenue, items sold, staff performance, room charges."""
+    if user["role"] not in [policies.ROLE_SUPER_ADMIN, policies.ROLE_BRANCH_ADMIN]: raise HTTPException(403, "Access denied")
+    bfilter = [] if policies.is_super_admin(user) else [Order.branch_id == user.get("branch_id")]
+    rc_bfilter = [] if policies.is_super_admin(user) else [RoomCharge.branch_id == user.get("branch_id")]
+
+    # Determine report date (default today in Ethiopian time UTC+3)
+    eat_offset = timedelta(hours=3)
+    if date:
+        try:
+            report_date = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            raise HTTPException(400, "Invalid date format. Use YYYY-MM-DD")
+    else:
+        report_date = (datetime.now(timezone.utc) + eat_offset).replace(
+            hour=0, minute=0, second=0, microsecond=0) - eat_offset
+
+    day_start = report_date
+    day_end   = report_date + timedelta(days=1)
+
+    # ── Orders summary ─────────────────────────────────────────────────────────
+    orders = (await db.execute(
+        select(Order).options(selectinload(Order.items))
+        .where(Order.created_at >= day_start, Order.created_at < day_end, *bfilter)
+    )).scalars().all()
+
+    total_orders   = len(orders)
+    paid_orders    = [o for o in orders if o.payment_status == "paid" and not o.is_voided]
+    voided_orders  = [o for o in orders if o.is_voided]
+    food_revenue   = sum(o.total_amount for o in paid_orders)
+
+    # ── Room charges ───────────────────────────────────────────────────────────
+    room_charges = (await db.execute(
+        select(RoomCharge).where(RoomCharge.created_at >= day_start, RoomCharge.created_at < day_end, *rc_bfilter)
+    )).scalars().all()
+    room_revenue = sum(c.room_fee for c in room_charges)
+
+    total_revenue = food_revenue + room_revenue
+
+    # ── Items sold ─────────────────────────────────────────────────────────────
+    item_counts: dict = {}
+    for o in paid_orders:
+        for item in (o.items or []):
+            if item.status != "cancelled":
+                key = item.menu_item_name
+                if key not in item_counts:
+                    item_counts[key] = {"name": key, "quantity": 0, "revenue": 0}
+                item_counts[key]["quantity"] += item.quantity
+                item_counts[key]["revenue"] += item.line_total
+    top_items = sorted(item_counts.values(), key=lambda x: x["quantity"], reverse=True)
+
+    # ── Payment methods breakdown ──────────────────────────────────────────────
+    payment_breakdown: dict = {}
+    for o in paid_orders:
+        pm = o.payment_method or "cash"
+        payment_breakdown[pm] = payment_breakdown.get(pm, 0) + o.total_amount
+    for c in room_charges:
+        pm = c.payment_method or "cash"
+        payment_breakdown[pm] = payment_breakdown.get(pm, 0) + c.room_fee
+
+    # ── Staff performance ──────────────────────────────────────────────────────
+    staff_perf: dict = {}
+    for o in paid_orders:
+        sid = o.server_id
+        if sid not in staff_perf:
+            staff_perf[sid] = {"server_id": sid, "server_name": o.server_name, "orders": 0, "revenue": 0, "items": 0}
+        staff_perf[sid]["orders"] += 1
+        staff_perf[sid]["revenue"] += o.total_amount
+        staff_perf[sid]["items"] += sum(i.quantity for i in (o.items or []) if i.status != "cancelled")
+
+    # ── Hourly breakdown ───────────────────────────────────────────────────────
+    hourly: dict = {}
+    for o in paid_orders:
+        hour_eat = (o.created_at + eat_offset).hour if o.created_at else 0
+        label = f"{hour_eat:02d}:00"
+        if label not in hourly:
+            hourly[label] = {"hour": label, "orders": 0, "revenue": 0}
+        hourly[label]["orders"] += 1
+        hourly[label]["revenue"] += o.total_amount
+
+    # ── Discounts & tips ───────────────────────────────────────────────────────
+    total_discounts = sum(o.discount_amount for o in paid_orders)
+    total_tips      = sum(o.tip_amount for o in paid_orders)
+    total_vat       = sum(o.vat_amount for o in paid_orders)
+
+    return {
+        "report_date": (report_date + eat_offset).strftime("%Y-%m-%d"),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        # Summary
+        "summary": {
+            "total_revenue": round(total_revenue, 2),
+            "food_drink_revenue": round(food_revenue, 2),
+            "room_revenue": round(room_revenue, 2),
+            "total_orders": total_orders,
+            "paid_orders": len(paid_orders),
+            "voided_orders": len(voided_orders),
+            "total_vat": round(total_vat, 2),
+            "total_discounts": round(total_discounts, 2),
+            "total_tips": round(total_tips, 2),
+            "avg_order_value": round(food_revenue / len(paid_orders), 2) if paid_orders else 0,
+        },
+        # Breakdowns
+        "payment_methods": [{"method": k, "amount": round(v, 2)} for k, v in sorted(payment_breakdown.items(), key=lambda x: -x[1])],
+        "top_items": top_items[:20],
+        "staff_performance": sorted(staff_perf.values(), key=lambda x: -x["revenue"]),
+        "hourly_breakdown": sorted(hourly.values(), key=lambda x: x["hour"]),
+        "room_charges": [_row(c) for c in room_charges],
+        # All paid orders (for detailed view)
+        "orders": [_order_to_dict(o) for o in paid_orders],
+        "voided_details": [{"id": o.id, "total": o.total_amount, "reason": o.void_reason, "server": o.server_name} for o in voided_orders],
+    }
+
+
 async def sales_by_date(days: int = 7, db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
     since = datetime.now(timezone.utc) - timedelta(days=days)
     bfilter = [] if policies.is_super_admin(user) else [Order.branch_id == user.get("branch_id")]

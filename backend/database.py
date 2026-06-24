@@ -52,7 +52,8 @@ async def create_tables():
         # Safe migrations — add columns that may not exist in older deployments
         migrations = [
             "ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS deduct_on_order BOOLEAN DEFAULT FALSE",
-            # room_charges table is created by create_all above — no manual migration needed
+            "ALTER TABLE orders ADD COLUMN IF NOT EXISTS assigned_server_id VARCHAR(36)",
+            "ALTER TABLE orders ADD COLUMN IF NOT EXISTS assigned_server_name VARCHAR(200)",
         ]
         for sql in migrations:
             try:
@@ -316,6 +317,9 @@ class Order(Base):
     reservation_id   : Mapped[Optional[str]] = mapped_column(ForeignKey("reservations.id"), nullable=True)
     server_id        : Mapped[str] = mapped_column(ForeignKey("users.id"))
     server_name      : Mapped[str] = mapped_column(String(200))
+    # For owner orders — the server assigned to deliver the order
+    assigned_server_id   : Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    assigned_server_name : Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     order_type       : Mapped[str] = mapped_column(String(20), default="dine_in")
     order_source     : Mapped[str] = mapped_column(String(20), default="table")
     status           : Mapped[str] = mapped_column(String(30), default="open")
