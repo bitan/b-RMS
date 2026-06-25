@@ -15,7 +15,7 @@ const Field = ({ label, children }) => (
     </div>
 );
 
-const initialIngredient = { name: '', unit: 'liter', cost_per_unit: '', current_stock: '', min_stock_level: '' };
+const initialIngredient = { name: '', unit: 'liter', cost_per_unit: '', current_stock: '', min_stock_level: '', par_level: '' };
 
 export const Inventory = () => {
     const [ingredients, setIngredients] = useState([]);
@@ -67,6 +67,7 @@ export const Inventory = () => {
             cost_per_unit: parseFloat(formData.cost_per_unit) || 0,
             current_stock: parseFloat(formData.current_stock) || 0,
             min_stock_level: parseFloat(formData.min_stock_level) || 0,
+            par_level: parseFloat(formData.par_level) || 0,
         };
         try {
             if (editingItem) {
@@ -204,7 +205,7 @@ export const Inventory = () => {
                                             <div className="flex items-center justify-end gap-1">
                                                 <button onClick={() => setAdjustItem(item)}
                                                     className="px-2.5 py-1 rounded-lg text-xs font-semibold hover:bg-blue-50 text-blue-500 transition-colors">±Adjust</button>
-                                                <button onClick={() => { setEditingItem(item); setFormData({ name: item.name, unit: item.unit, cost_per_unit: item.cost_per_unit, current_stock: item.current_stock, min_stock_level: item.min_stock_level }); setShowModal(true); }}
+                                                <button onClick={() => { setEditingItem(item); setFormData({ name: item.name, unit: item.unit, cost_per_unit: item.cost_per_unit, current_stock: item.current_stock, min_stock_level: item.min_stock_level, par_level: item.par_level || 0 }); setShowModal(true); }}
                                                     className="p-1.5 rounded-lg hover:bg-blue-50 text-blue-500 transition-colors"><Edit2 className="w-3.5 h-3.5" /></button>
                                                 <button onClick={() => { setItemToDelete(item); setShowDeleteDialog(true); }}
                                                     className="p-1.5 rounded-lg hover:bg-red-50 text-red-400 transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
@@ -248,6 +249,11 @@ export const Inventory = () => {
                                 </Field>
                                 <Field label="Min Stock Level">
                                     <input type="number" min="0" step="0.001" value={formData.min_stock_level} onChange={e => setFormData({ ...formData, min_stock_level: e.target.value })}
+                                        className="w-full px-4 py-2.5 text-sm rounded-xl border outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500 transition-all" style={inputStyle} />
+                                </Field>
+                                <Field label="Par Level (Bar Restock)">
+                                    <input type="number" min="0" step="0.001" value={formData.par_level} onChange={e => setFormData({ ...formData, par_level: e.target.value })}
+                                        placeholder="0 = not a bar item"
                                         className="w-full px-4 py-2.5 text-sm rounded-xl border outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500 transition-all" style={inputStyle} />
                                 </Field>
                             </div>

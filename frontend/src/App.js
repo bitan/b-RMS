@@ -21,6 +21,7 @@ import { AuditLog } from "./pages/AuditLog";
 import { Branches } from "./pages/Branches";
 import { PurchaseOrders } from "./pages/PurchaseOrders";
 import { HappyHours } from "./pages/HappyHours";
+import { BarRestock } from "./pages/BarRestock";
 import { Rooms } from "./pages/Rooms";
 import { Reservations } from "./pages/Reservations";
 import { KitchenDisplay } from "./pages/KitchenDisplay";
@@ -178,6 +179,12 @@ function AppRoutes() {
       <Route path="/happy-hours" element={
         <ProtectedRoute allowedRoles={[ROLES.OWNER, ROLES.MANAGER]}>
           <HappyHours />
+        </ProtectedRoute>
+      } />
+
+      <Route path="/bar-restock" element={
+        <ProtectedRoute allowedRoles={[ROLES.OWNER, ROLES.MANAGER]}>
+          <BarRestock />
         </ProtectedRoute>
       } />
 

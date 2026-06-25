@@ -14,7 +14,7 @@ import {
     BarChart3, LogOut, Menu, X, Bell, Search, ChevronDown,
     Shield, Clock, ScrollText, Building2, Sun, Moon, KeyRound,
     UserCircle, ShoppingBag, BedDouble, CalendarRange, ChefHat,
-    GlassWater, Package, BookOpen, Utensils, Percent,
+    GlassWater, Package, BookOpen, Utensils, Percent, Beer,
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import {
@@ -45,6 +45,7 @@ const navItems = [
     { path: '/suppliers',    icon: Truck,             label: 'Suppliers',       roles: [ROLES.OWNER, ROLES.MANAGER] },
     { path: '/purchase-orders', icon: ShoppingBag,   label: 'Purchase Orders', roles: [ROLES.OWNER, ROLES.MANAGER] },
     { path: '/happy-hours',  icon: Percent,           label: 'Happy Hours',     roles: [ROLES.OWNER, ROLES.MANAGER] },
+    { path: '/bar-restock',  icon: Beer,              label: 'Bar Restock',     roles: [ROLES.OWNER, ROLES.MANAGER] },
     { path: '/employees',    icon: Users,             label: 'Staff',           roles: [ROLES.OWNER, ROLES.MANAGER] },
     { path: '/shifts',       icon: Clock,             label: 'Shift Report',    roles: [ROLES.OWNER, ROLES.MANAGER, ROLES.CASHIER, ROLES.SERVER, ROLES.BARTENDER, ROLES.KITCHEN, ROLES.ROOM_MANAGER] },
     { path: '/reports',      icon: BarChart3,         label: 'Reports',         roles: [ROLES.OWNER, ROLES.MANAGER] },

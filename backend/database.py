@@ -54,7 +54,7 @@ async def create_tables():
             "ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS deduct_on_order BOOLEAN DEFAULT FALSE",
             "ALTER TABLE orders ADD COLUMN IF NOT EXISTS assigned_server_id VARCHAR(36)",
             "ALTER TABLE orders ADD COLUMN IF NOT EXISTS assigned_server_name VARCHAR(200)",
-            # purchase_orders created by create_all
+            "ALTER TABLE ingredients ADD COLUMN IF NOT EXISTS par_level FLOAT DEFAULT 0",
         ]
         for sql in migrations:
             try:
@@ -292,6 +292,8 @@ class Ingredient(Base):
     cost_per_unit   : Mapped[float] = mapped_column(Float, default=0)
     current_stock   : Mapped[float] = mapped_column(Float, default=0)
     min_stock_level : Mapped[float] = mapped_column(Float, default=0)
+    # par_level: fixed stock level to maintain at the bar (0 = not a bar item)
+    par_level       : Mapped[float] = mapped_column(Float, default=0)
     supplier_id     : Mapped[Optional[str]] = mapped_column(String(36))
     branch_id       : Mapped[str] = mapped_column(ForeignKey("branches.id"))
     created_at      : Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -513,8 +515,7 @@ class InventoryDeduction(Base):
     created_at      : Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
-# ── Purchase Order ────────────────────────────────────────────────────────────
-class PurchaseOrder(Base):
+# ── Purchase Order ────────────────────────────────────────────────────────────class PurchaseOrder(Base):
     """Tracks restocking orders placed with suppliers."""
     __tablename__ = "purchase_orders"
     id                : Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -534,3 +535,20 @@ class PurchaseOrder(Base):
     created_at        : Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (Index("ix_po_branch_status", "branch_id", "status"),)
+
+
+# ── Bar Restock Log ───────────────────────────────────────────────────────────
+class BarRestockLog(Base):
+    """Daily bar restock settlement — tracks what was refilled and total cost."""
+    __tablename__ = "bar_restock_logs"
+    id              : Mapped[str] = mapped_column(String(36), primary_key=True)
+    restock_date    : Mapped[str] = mapped_column(String(20))   # YYYY-MM-DD (Ethiopian date)
+    items           : Mapped[dict] = mapped_column(JSON)        # [{ingredient_id, name, par_level, stock_before, qty_restocked, unit, cost_per_unit, line_cost}]
+    total_cost      : Mapped[float] = mapped_column(Float, default=0)
+    notes           : Mapped[Optional[str]] = mapped_column(Text)
+    confirmed_by    : Mapped[str] = mapped_column(String(36))
+    confirmed_by_name: Mapped[str] = mapped_column(String(200))
+    branch_id       : Mapped[str] = mapped_column(ForeignKey("branches.id"))
+    created_at      : Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (Index("ix_bar_restock_date", "branch_id", "restock_date"),)

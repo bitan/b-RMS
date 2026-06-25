@@ -26,7 +26,7 @@ from .database import (
     Branch, User, Room, Reservation, RoomCharge, Category, MenuItem,
     Ingredient, Recipe, Order, OrderItem, Shift,
     Supplier, AuditLog, HappyHour, WasteLog, RefreshToken,
-    VoidRequest, SplitBill, InventoryDeduction, PurchaseOrder,
+    VoidRequest, SplitBill, InventoryDeduction, PurchaseOrder, BarRestockLog,
 )
 from . import policies
 from . import realtime
@@ -214,12 +214,13 @@ class MenuItemUpdate(BaseModel):
 class IngredientCreate(BaseModel):
     name: str; unit: str; cost_per_unit: float = 0
     current_stock: float = 0; min_stock_level: float = 0
+    par_level: float = 0
     supplier_id: Optional[str] = None; branch_id: Optional[str] = None
 
 class IngredientUpdate(BaseModel):
     name: Optional[str] = None; unit: Optional[str] = None
     cost_per_unit: Optional[float] = None; current_stock: Optional[float] = None
-    min_stock_level: Optional[float] = None
+    min_stock_level: Optional[float] = None; par_level: Optional[float] = None
 
 class RecipeCreate(BaseModel):
     menu_item_id: str; ingredients: List[dict]; instructions: Optional[str] = None; prep_time: int = 10
@@ -1797,6 +1798,160 @@ async def get_products(db: AsyncSession = Depends(get_db), user=Depends(get_curr
     if not policies.is_super_admin(user): q = q.where(Ingredient.branch_id == user.get("branch_id"))
     rows = (await db.execute(q)).scalars().all()
     return {"items": [_row(r) for r in rows], "total": len(rows)}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BAR RESTOCK — daily par-level refill sheet
+# ══════════════════════════════════════════════════════════════════════════════
+class BarRestockConfirm(BaseModel):
+    items: List[dict]       # [{ingredient_id, qty_restocked}]
+    notes: Optional[str] = None
+
+@app.get("/api/bar-restock")
+async def get_bar_restock(db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
+    """
+    Returns the daily restock sheet for the bar:
+    - All ingredients with par_level > 0
+    - Current stock vs par level
+    - Qty sold today (from inventory deductions)
+    - Qty needed to refill back to par level
+    - Total cost of refill
+    """
+    if user["role"] not in policies.INVENTORY_ROLES: raise HTTPException(403, "Access denied")
+    bfilter = [] if policies.is_super_admin(user) else [Ingredient.branch_id == user.get("branch_id")]
+
+    # Get all bar items (par_level > 0)
+    bar_items = (await db.execute(
+        select(Ingredient).where(Ingredient.par_level > 0, *bfilter)
+        .order_by(Ingredient.name)
+    )).scalars().all()
+
+    if not bar_items:
+        return {"items": [], "total_restock_cost": 0, "restock_date": "", "already_confirmed": False}
+
+    # Get today's deductions for these items (Ethiopian time UTC+3)
+    eat_offset = timedelta(hours=3)
+    today_eat = (datetime.now(timezone.utc) + eat_offset).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_utc = today_eat - eat_offset
+    tomorrow_utc = today_utc + timedelta(days=1)
+    restock_date = today_eat.strftime("%Y-%m-%d")
+
+    # Check if already confirmed today
+    existing = (await db.execute(
+        select(BarRestockLog).where(
+            BarRestockLog.restock_date == restock_date,
+            BarRestockLog.branch_id == (bar_items[0].branch_id if bar_items else "")
+        )
+    )).scalar_one_or_none()
+
+    ingredient_ids = [i.id for i in bar_items]
+    # Sum deductions per ingredient today
+    deduction_rows = (await db.execute(
+        select(
+            InventoryDeduction.ingredient_id,
+            func.sum(InventoryDeduction.quantity_deducted).label("total_deducted")
+        ).where(
+            InventoryDeduction.ingredient_id.in_(ingredient_ids),
+            InventoryDeduction.created_at >= today_utc,
+            InventoryDeduction.created_at < tomorrow_utc,
+        ).group_by(InventoryDeduction.ingredient_id)
+    )).all()
+    deductions_map = {r.ingredient_id: float(r.total_deducted or 0) for r in deduction_rows}
+
+    items_out = []
+    total_cost = 0.0
+    for ing in bar_items:
+        qty_sold = deductions_map.get(ing.id, 0)
+        # Qty needed = par_level - current_stock (what's missing to reach par)
+        qty_needed = max(0, round(ing.par_level - ing.current_stock, 4))
+        line_cost = round(qty_needed * ing.cost_per_unit, 2)
+        total_cost += line_cost
+        items_out.append({
+            "ingredient_id": ing.id,
+            "name": ing.name,
+            "unit": ing.unit,
+            "par_level": ing.par_level,
+            "current_stock": ing.current_stock,
+            "qty_sold_today": round(qty_sold, 4),
+            "qty_needed": qty_needed,
+            "cost_per_unit": ing.cost_per_unit,
+            "line_cost": line_cost,
+        })
+
+    return {
+        "items": items_out,
+        "total_restock_cost": round(total_cost, 2),
+        "restock_date": restock_date,
+        "already_confirmed": existing is not None,
+        "previous_confirmation": _row(existing) if existing else None,
+    }
+
+@app.post("/api/bar-restock/confirm")
+async def confirm_bar_restock(data: BarRestockConfirm, db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
+    """
+    Confirm daily restock:
+    1. Update each ingredient's current_stock back to par_level
+    2. Log the restock with cost for settlement
+    """
+    if user["role"] not in policies.INVENTORY_ROLES: raise HTTPException(403, "Access denied")
+    branch_id = await _resolve_bid(user, db)
+
+    eat_offset = timedelta(hours=3)
+    restock_date = (datetime.now(timezone.utc) + eat_offset).strftime("%Y-%m-%d")
+
+    log_items = []
+    total_cost = 0.0
+
+    for item in data.items:
+        ing_id = item.get("ingredient_id")
+        qty_restocked = float(item.get("qty_restocked", 0))
+        if not ing_id or qty_restocked <= 0:
+            continue
+        ing = await db.get(Ingredient, ing_id)
+        if not ing:
+            continue
+        stock_before = ing.current_stock
+        ing.current_stock = round(ing.current_stock + qty_restocked, 4)
+        line_cost = round(qty_restocked * ing.cost_per_unit, 2)
+        total_cost += line_cost
+        log_items.append({
+            "ingredient_id": ing_id,
+            "name": ing.name,
+            "par_level": ing.par_level,
+            "stock_before": stock_before,
+            "stock_after": ing.current_stock,
+            "qty_restocked": qty_restocked,
+            "unit": ing.unit,
+            "cost_per_unit": ing.cost_per_unit,
+            "line_cost": line_cost,
+        })
+
+    restock_log = BarRestockLog(
+        id=str(uuid.uuid4()),
+        restock_date=restock_date,
+        items=log_items,
+        total_cost=round(total_cost, 2),
+        notes=data.notes,
+        confirmed_by=user["id"],
+        confirmed_by_name=user["name"],
+        branch_id=branch_id,
+    )
+    db.add(restock_log)
+    await db.commit()
+    asyncio.create_task(log_audit(None, user["id"], user["name"], "bar_restock_confirmed", "inventory",
+        restock_log.id, f"Bar restock {restock_date}: {len(log_items)} items · {total_cost:.2f} ETB",
+        branch_id=branch_id))
+    await broadcast_entity_update("ingredient", "restocked", {"restock_date": restock_date, "total_cost": total_cost})
+    return _row(restock_log)
+
+@app.get("/api/bar-restock/history")
+async def get_restock_history(db: AsyncSession = Depends(get_db), user=Depends(get_current_user),
+                               skip: int = 0, limit: int = 30):
+    """Past restock logs for accounting review."""
+    if user["role"] not in policies.INVENTORY_ROLES: raise HTTPException(403, "Access denied")
+    q = select(BarRestockLog)
+    if not policies.is_super_admin(user): q = q.where(BarRestockLog.branch_id == user.get("branch_id"))
+    rows = (await db.execute(q.order_by(BarRestockLog.created_at.desc()).offset(skip).limit(limit))).scalars().all()
+    return [_row(r) for r in rows]
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CATEGORIES
