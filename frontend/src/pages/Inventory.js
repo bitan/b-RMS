@@ -29,6 +29,10 @@ export const Inventory = () => {
     const [adjustItem, setAdjustItem] = useState(null);
     const [adjustQty, setAdjustQty] = useState('');
     const [adjustLoading, setAdjustLoading] = useState(false);
+    // Deduction log tab
+    const [activeTab, setActiveTab] = useState('ingredients');
+    const [deductions, setDeductions] = useState([]);
+    const [deductLoading, setDeductLoading] = useState(false);
 
     const fetchData = useCallback(async () => {
         try {
@@ -38,7 +42,17 @@ export const Inventory = () => {
         finally { setLoading(false); }
     }, []);
 
+    const fetchDeductions = useCallback(async () => {
+        setDeductLoading(true);
+        try {
+            const res = await axios.get(`${API}/inventory-deductions?limit=100`, { withCredentials: true });
+            setDeductions(res.data);
+        } catch { toast.error('Failed to load deduction log'); }
+        finally { setDeductLoading(false); }
+    }, []);
+
     useEffect(() => { fetchData(); }, [fetchData]);
+    useEffect(() => { if (activeTab === 'deductions') fetchDeductions(); }, [activeTab, fetchDeductions]);
 
     const filtered = ingredients.filter(i =>
         i.name.toLowerCase().includes(searchTerm.toLowerCase())
@@ -102,16 +116,30 @@ export const Inventory = () => {
             {/* Header */}
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
                 <div>
-                    <h1 className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>Ingredients</h1>
+                    <h1 className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>Inventory</h1>
                     <p className="text-sm mt-0.5" style={{ color: 'var(--text-muted)' }}>
                         {ingredients.length} ingredients · {lowStock.length > 0 ? <span className="text-red-500 font-semibold">{lowStock.length} low stock</span> : 'all stocked'}
                     </p>
                 </div>
+                <div className="flex items-center gap-3">
+                    {/* Tab switcher */}
+                    <div className="flex rounded-xl overflow-hidden border" style={{ borderColor: 'var(--border)' }}>
+                        {[['ingredients','📦 Stock'],['deductions','📋 Deduction Log']].map(([tab, label]) => (
+                            <button key={tab} onClick={() => setActiveTab(tab)}
+                                className={`px-3 py-2 text-xs font-semibold transition-all ${activeTab===tab ? 'text-white' : ''}`}
+                                style={activeTab===tab ? { background:'linear-gradient(135deg,#F59E0B,#D97706)' } : { background:'var(--bg-card)', color:'var(--text-secondary)' }}>
+                                {label}
+                            </button>
+                        ))}
+                    </div>
+                {activeTab === 'ingredients' && (
                 <button onClick={() => { setEditingItem(null); setFormData(initialIngredient); setShowModal(true); }}
                     className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white transition-all hover:-translate-y-0.5"
                     style={{ background: 'linear-gradient(135deg,#F59E0B,#D97706)', boxShadow: '0 4px 14px rgba(245,158,11,0.35)' }}>
                     <Plus className="w-4 h-4" />Add Ingredient
                 </button>
+                )}
+                </div>
             </div>
 
             {/* Low stock alert */}
@@ -125,6 +153,8 @@ export const Inventory = () => {
                 </div>
             )}
 
+            {/* ── INGREDIENTS TAB ── */}
+            {activeTab === 'ingredients' && (<>
             {/* Search */}
             <div className="relative max-w-sm">
                 <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 pointer-events-none" style={{ color: 'var(--text-muted)' }} />
@@ -273,6 +303,45 @@ export const Inventory = () => {
                                 className="flex-1 py-2.5 rounded-xl text-sm font-bold text-white bg-red-500 hover:bg-red-600 transition-colors">Delete</button>
                         </div>
                     </div>
+                </div>
+            )}
+            </>) /* end ingredients tab */}
+
+            {/* ── DEDUCTION LOG TAB ── */}
+            {activeTab === 'deductions' && (
+                <div className="space-y-3">
+                    <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Stock automatically deducted when orders are paid. Shows last 100 entries.</p>
+                    {deductLoading ? (
+                        <div className="space-y-2">{[1,2,3,4,5].map(i => <div key={i} className="h-14 rounded-xl animate-pulse" style={{ background: 'var(--bg-card)' }} />)}</div>
+                    ) : deductions.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center h-48 gap-3" style={{ color: 'var(--text-muted)' }}>
+                            <FlaskConical className="w-10 h-10 opacity-30" />
+                            <p>No deductions recorded yet</p>
+                            <p className="text-xs opacity-60">Deductions are logged when paid orders use ingredients with recipes</p>
+                        </div>
+                    ) : (
+                        <div className="card-soft overflow-hidden">
+                            <div className="overflow-x-auto">
+                                <table className="data-table">
+                                    <thead>
+                                        <tr><th>Date</th><th>Menu Item</th><th>Ingredient</th><th className="text-right">Qty</th><th>Unit</th><th>Order</th></tr>
+                                    </thead>
+                                    <tbody>
+                                        {deductions.map(d => (
+                                            <tr key={d.id}>
+                                                <td className="text-xs" style={{ color:'var(--text-muted)' }}>{d.created_at ? new Date(d.created_at).toLocaleString('en-ET') : '—'}</td>
+                                                <td className="font-medium text-sm" style={{ color:'var(--text-primary)' }}>{d.menu_item_name}</td>
+                                                <td className="text-sm" style={{ color:'var(--text-secondary)' }}>{d.ingredient_name}</td>
+                                                <td className="text-right font-bold text-amber-600">{d.quantity_deducted}</td>
+                                                <td className="text-xs" style={{ color:'var(--text-muted)' }}>{d.unit}</td>
+                                                <td className="font-mono text-xs" style={{ color:'var(--text-muted)' }}>{d.order_id ? d.order_id.slice(-8).toUpperCase() : '—'}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    )}
                 </div>
             )}
         </div>

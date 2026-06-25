@@ -31,7 +31,7 @@ const RoomCard = ({ room, canManage, canCashier, canRoomManager, onStatusChange,
     const statusOptions = canManage
         ? [['available','Set Available'],['occupied','Set Occupied'],['reserved','Set Reserved'],['dirty','Set Cleaning']]
         : canCashier
-            ? [['available','Set Available'],['occupied','Set Occupied (After Payment)'],['dirty','Set Needs Cleaning']]
+            ? [['available','Set Available'],['dirty','Set Needs Cleaning']]
             : canRoomManager
                 ? [['available','Room is Clean/Ready'],['reserved','Set Reserved'],['dirty','Set Needs Cleaning']]
                 : [];

@@ -20,6 +20,7 @@ import { ShiftReport } from "./pages/ShiftReport";
 import { AuditLog } from "./pages/AuditLog";
 import { Branches } from "./pages/Branches";
 import { PurchaseOrders } from "./pages/PurchaseOrders";
+import { HappyHours } from "./pages/HappyHours";
 import { Rooms } from "./pages/Rooms";
 import { Reservations } from "./pages/Reservations";
 import { KitchenDisplay } from "./pages/KitchenDisplay";
@@ -171,6 +172,12 @@ function AppRoutes() {
       <Route path="/purchase-orders" element={
         <ProtectedRoute allowedRoles={[ROLES.OWNER, ROLES.MANAGER]}>
           <PurchaseOrders />
+        </ProtectedRoute>
+      } />
+
+      <Route path="/happy-hours" element={
+        <ProtectedRoute allowedRoles={[ROLES.OWNER, ROLES.MANAGER]}>
+          <HappyHours />
         </ProtectedRoute>
       } />
 

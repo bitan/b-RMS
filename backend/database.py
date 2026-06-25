@@ -54,6 +54,7 @@ async def create_tables():
             "ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS deduct_on_order BOOLEAN DEFAULT FALSE",
             "ALTER TABLE orders ADD COLUMN IF NOT EXISTS assigned_server_id VARCHAR(36)",
             "ALTER TABLE orders ADD COLUMN IF NOT EXISTS assigned_server_name VARCHAR(200)",
+            # purchase_orders created by create_all
         ]
         for sql in migrations:
             try:
@@ -510,3 +511,26 @@ class InventoryDeduction(Base):
     unit            : Mapped[str] = mapped_column(String(20))
     branch_id       : Mapped[str] = mapped_column(ForeignKey("branches.id"))
     created_at      : Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+# ── Purchase Order ────────────────────────────────────────────────────────────
+class PurchaseOrder(Base):
+    """Tracks restocking orders placed with suppliers."""
+    __tablename__ = "purchase_orders"
+    id                : Mapped[str] = mapped_column(String(36), primary_key=True)
+    supplier_id       : Mapped[Optional[str]] = mapped_column(ForeignKey("suppliers.id"), nullable=True)
+    supplier_name     : Mapped[str] = mapped_column(String(200))
+    items             : Mapped[dict] = mapped_column(JSON)   # [{ingredient_id, ingredient_name, quantity_ordered, quantity_received, unit_cost}]
+    total_cost        : Mapped[float] = mapped_column(Float, default=0)
+    status            : Mapped[str] = mapped_column(String(20), default="pending")  # pending, received, cancelled
+    notes             : Mapped[Optional[str]] = mapped_column(Text)
+    expected_delivery : Mapped[Optional[str]] = mapped_column(String(50))
+    received_at       : Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    received_by       : Mapped[Optional[str]] = mapped_column(String(36))
+    received_by_name  : Mapped[Optional[str]] = mapped_column(String(200))
+    created_by        : Mapped[str] = mapped_column(String(36))
+    created_by_name   : Mapped[str] = mapped_column(String(200))
+    branch_id         : Mapped[str] = mapped_column(ForeignKey("branches.id"))
+    created_at        : Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (Index("ix_po_branch_status", "branch_id", "status"),)

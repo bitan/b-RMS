@@ -26,7 +26,7 @@ from .database import (
     Branch, User, Room, Reservation, RoomCharge, Category, MenuItem,
     Ingredient, Recipe, Order, OrderItem, Shift,
     Supplier, AuditLog, HappyHour, WasteLog, RefreshToken,
-    VoidRequest, SplitBill, InventoryDeduction,
+    VoidRequest, SplitBill, InventoryDeduction, PurchaseOrder,
 )
 from . import policies
 from . import realtime
@@ -860,6 +860,12 @@ async def create_room_charge(data: RoomChargeCreate, db: AsyncSession = Depends(
     )
     db.add(charge)
     await db.commit()
+    # Update room status to dirty after fee is collected (checkout complete)
+    room = await db.get(Room, data.room_id)
+    if room and room.occupancy_status == "occupied":
+        room.occupancy_status = "dirty"
+        await db.commit()
+        await broadcast_entity_update("room", "updated", {"id": data.room_id, "occupancy_status": "dirty"})
     asyncio.create_task(log_audit(None, user["id"], user["name"], "room_charge_collected", "room",
         data.room_id, f"Room fee {data.room_fee:.2f} ETB from {data.customer_name} via {data.payment_method}",
         branch_id=branch_id))
@@ -1603,8 +1609,67 @@ async def staff_performance_report(days: int = 30, db: AsyncSession = Depends(ge
              "tips": round(float(r.tips or 0), 2)} for r in rows]
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SUPPLIERS
+# CSV EXPORTS
 # ══════════════════════════════════════════════════════════════════════════════
+import csv, io
+from fastapi.responses import StreamingResponse
+
+@app.get("/api/reports/export/sales-csv")
+async def export_sales_csv(days: int = 7, db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
+    """Export paid orders summary as CSV."""
+    if user["role"] not in [policies.ROLE_SUPER_ADMIN, policies.ROLE_BRANCH_ADMIN]: raise HTTPException(403, "Access denied")
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    bfilter = [] if policies.is_super_admin(user) else [Order.branch_id == user.get("branch_id")]
+    orders = (await db.execute(
+        select(Order).where(Order.created_at >= since, Order.payment_status == "paid", Order.is_voided == False, *bfilter)
+        .order_by(Order.created_at.desc())
+    )).scalars().all()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Order ID", "Date", "Server", "Table/Room", "Items", "Subtotal", "VAT", "Total", "Payment Method", "Status"])
+    for o in orders:
+        writer.writerow([
+            o.id.slice(-8).upper() if hasattr(o.id, 'slice') else o.id[-8:].upper(),
+            o.created_at.strftime("%Y-%m-%d %H:%M") if o.created_at else "",
+            o.server_name, o.table_number or o.room_id or "—",
+            len(o.items) if hasattr(o, 'items') else "?",
+            o.subtotal, o.vat_amount, o.total_amount, o.payment_method or "cash", o.status
+        ])
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=sales_{days}days.csv"}
+    )
+
+@app.get("/api/reports/export/sales-items-csv")
+async def export_sales_items_csv(days: int = 7, db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
+    """Export itemized order lines as CSV."""
+    if user["role"] not in [policies.ROLE_SUPER_ADMIN, policies.ROLE_BRANCH_ADMIN]: raise HTTPException(403, "Access denied")
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    bfilter = [] if policies.is_super_admin(user) else [Order.branch_id == user.get("branch_id")]
+    orders = (await db.execute(
+        select(Order).where(Order.created_at >= since, Order.payment_status == "paid", Order.is_voided == False, *bfilter)
+        .options(selectinload(Order.items)).order_by(Order.created_at.desc())
+    )).scalars().all()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Order ID", "Date", "Server", "Item", "Qty", "Unit Price", "Line Total", "Route"])
+    for o in orders:
+        for item in (o.items or []):
+            if item.status != "cancelled":
+                writer.writerow([
+                    o.id[-8:].upper(),
+                    o.created_at.strftime("%Y-%m-%d %H:%M") if o.created_at else "",
+                    o.server_name, item.menu_item_name,
+                    item.quantity, item.unit_price, item.line_total, item.route_to
+                ])
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=order_items_{days}days.csv"}
+    )
 @app.get("/api/suppliers")
 async def get_suppliers(db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
     if user["role"] not in policies.INVENTORY_ROLES: raise HTTPException(403, "Access denied")
@@ -1632,6 +1697,106 @@ async def delete_supplier(sid: str, db: AsyncSession = Depends(get_db), user=Dep
     if user["role"] not in policies.INVENTORY_ROLES: raise HTTPException(403, "Access denied")
     await db.execute(delete(Supplier).where(Supplier.id == sid))
     await db.commit(); return {"message": "Deleted"}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PURCHASE ORDERS
+# ══════════════════════════════════════════════════════════════════════════════
+class PurchaseOrderCreate(BaseModel):
+    supplier_id: Optional[str] = None
+    items: List[dict]  # [{ingredient_id, ingredient_name, quantity_ordered, unit_cost}]
+    notes: Optional[str] = None
+    expected_delivery: Optional[str] = None
+
+class PurchaseOrderReceive(BaseModel):
+    items: List[dict]  # [{ingredient_id, quantity_received}]
+    notes: Optional[str] = None
+
+@app.get("/api/purchase-orders")
+async def get_purchase_orders(db: AsyncSession = Depends(get_db), user=Depends(get_current_user),
+                               status: Optional[str] = None, skip: int = 0, limit: int = 100):
+    if user["role"] not in policies.INVENTORY_ROLES: raise HTTPException(403, "Access denied")
+    q = select(PurchaseOrder)
+    if not policies.is_super_admin(user): q = q.where(PurchaseOrder.branch_id == user.get("branch_id"))
+    if status: q = q.where(PurchaseOrder.status == status)
+    q = q.order_by(PurchaseOrder.created_at.desc())
+    rows = (await db.execute(q.offset(skip).limit(limit))).scalars().all()
+    return [_row(r) for r in rows]
+
+@app.post("/api/purchase-orders")
+async def create_purchase_order(data: PurchaseOrderCreate, db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
+    if user["role"] not in policies.INVENTORY_ROLES: raise HTTPException(403, "Access denied")
+    branch_id = await _resolve_bid(user, db)
+    # Resolve supplier name
+    supplier_name = "Unknown Supplier"
+    if data.supplier_id:
+        sup = await db.get(Supplier, data.supplier_id)
+        if sup: supplier_name = sup.name
+    total_cost = sum(float(i.get("quantity_ordered", 0)) * float(i.get("unit_cost", 0)) for i in data.items)
+    po = PurchaseOrder(
+        id=str(uuid.uuid4()),
+        supplier_id=data.supplier_id,
+        supplier_name=supplier_name,
+        items=data.items,
+        total_cost=round(total_cost, 2),
+        notes=data.notes,
+        expected_delivery=data.expected_delivery,
+        created_by=user["id"],
+        created_by_name=user["name"],
+        branch_id=branch_id,
+    )
+    db.add(po)
+    await db.commit()
+    asyncio.create_task(log_audit(None, user["id"], user["name"], "purchase_order_created", "purchase_order",
+        po.id, f"PO created: {len(data.items)} items · {total_cost:.2f} ETB from {supplier_name}", branch_id=branch_id))
+    return _row(po)
+
+@app.put("/api/purchase-orders/{po_id}/receive")
+async def receive_purchase_order(po_id: str, data: PurchaseOrderReceive, db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
+    """Mark order as received and update ingredient stock levels."""
+    if user["role"] not in policies.INVENTORY_ROLES: raise HTTPException(403, "Access denied")
+    po = await db.get(PurchaseOrder, po_id)
+    if not po: raise HTTPException(404, "Purchase order not found")
+    if po.status != "pending": raise HTTPException(400, f"Cannot receive a {po.status} order")
+    # Update ingredient stock for each received item
+    for item in data.items:
+        ing_id = item.get("ingredient_id") or item.get("product_id")
+        qty = float(item.get("quantity_received", 0))
+        if ing_id and qty > 0:
+            ing = await db.get(Ingredient, ing_id)
+            if ing:
+                ing.current_stock = round(ing.current_stock + qty, 4)
+    # Mark order as received
+    po.status = "received"
+    po.received_at = datetime.now(timezone.utc)
+    po.received_by = user["id"]
+    po.received_by_name = user["name"]
+    if data.notes: po.notes = (po.notes or "") + f"\nReceived: {data.notes}"
+    await db.commit()
+    asyncio.create_task(log_audit(None, user["id"], user["name"], "purchase_order_received", "purchase_order",
+        po_id, f"Stock received from {po.supplier_name}", branch_id=po.branch_id))
+    await broadcast_entity_update("ingredient", "stock_updated", {"purchase_order_id": po_id})
+    return _row(po)
+
+@app.put("/api/purchase-orders/{po_id}/cancel")
+async def cancel_purchase_order(po_id: str, db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
+    if user["role"] not in policies.INVENTORY_ROLES: raise HTTPException(403, "Access denied")
+    po = await db.get(PurchaseOrder, po_id)
+    if not po: raise HTTPException(404, "Purchase order not found")
+    if po.status != "pending": raise HTTPException(400, f"Cannot cancel a {po.status} order")
+    po.status = "cancelled"
+    await db.commit()
+    asyncio.create_task(log_audit(None, user["id"], user["name"], "purchase_order_cancelled", "purchase_order",
+        po_id, f"PO cancelled: {po.supplier_name}", branch_id=po.branch_id))
+    return _row(po)
+
+# Also expose /api/products as alias for /api/ingredients (for PurchaseOrders frontend compatibility)
+@app.get("/api/products")
+async def get_products(db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
+    """Alias for /api/ingredients — used by Purchase Orders page."""
+    q = select(Ingredient)
+    if not policies.is_super_admin(user): q = q.where(Ingredient.branch_id == user.get("branch_id"))
+    rows = (await db.execute(q)).scalars().all()
+    return {"items": [_row(r) for r in rows], "total": len(rows)}
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CATEGORIES
