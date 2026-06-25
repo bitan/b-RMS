@@ -515,7 +515,8 @@ class InventoryDeduction(Base):
     created_at      : Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
-# ── Purchase Order ────────────────────────────────────────────────────────────class PurchaseOrder(Base):
+# ── Purchase Order ────────────────────────────────────────────────────────────
+class PurchaseOrder(Base):
     """Tracks restocking orders placed with suppliers."""
     __tablename__ = "purchase_orders"
     id                : Mapped[str] = mapped_column(String(36), primary_key=True)
